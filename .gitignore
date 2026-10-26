@@ -1,0 +1,32 @@
+
+# Python environments
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Secrets
+.env
+.env.*
+
+# Local datasets
+data/raw/*
+data/processed/*
+
+# Preserve empty data directories
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Ignore downloaded datasets
+data/raw/*
+data/processed/*
+
+# Preserve placeholder files
+!data/raw/.gitkeep
+!data/processed/.gitkeep

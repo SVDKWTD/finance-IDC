@@ -1,0 +1,20 @@
+
+name: finance-news
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - yfinance
+      - pandas
+      - numpy
+      - matplotlib
+      - seaborn
+      - scikit-learn
+      - jupyterlab
+      - requests
+      - beautifulsoup4
+      - feedparser
+      - vaderSentiment
+      - python-dotenv
