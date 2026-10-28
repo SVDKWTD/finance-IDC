@@ -1,32 +1,36 @@
 
-# Python environments
+# Python
+__pycache__/
+*.py[cod]
 .venv/
 venv/
 env/
 
-# Python cache
-__pycache__/
-*.py[cod]
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
 
 # Jupyter
 .ipynb_checkpoints/
 
-# Secrets
-.env
-.env.*
+# Model and tool caches
+.cache/
+huggingface/
+transformers_cache/
 
-# Local datasets
-data/raw/*
-data/processed/*
+# Logs
+*.log
 
-# Preserve empty data directories
-!data/raw/.gitkeep
-!data/processed/.gitkeep
+# Local database
+data/market.db
+data/market.db-shm
+data/market.db-wal
 
-# Ignore downloaded datasets
-data/raw/*
-data/processed/*
+# Generated project data
+data/
 
-# Preserve placeholder files
+# Allow folder structure to be tracked if needed
+!data/.gitkeep
 !data/raw/.gitkeep
 !data/processed/.gitkeep
