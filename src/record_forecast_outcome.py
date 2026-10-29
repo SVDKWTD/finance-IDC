@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DB = ROOT / "data" / "market.db"
 PRICES = ROOT / "data" / "processed" / "nifty50_processed.csv"
 OUTPUT = ROOT / "data" / "processed" / "forecast_outcome_history.csv"
+OFFICIAL_MODEL_VERSIONS = {"monthly_sampled_2026_ridge_logistic_volatility_v1", "monthly_sampled_2026_adaptive_walkforward_v1"}
 
 
 def add_column_if_missing(con, table, column, sql_type):
@@ -81,6 +82,15 @@ def main():
         add_column_if_missing(con, "forecast_history", "volatility_training_rate", "REAL")
         add_column_if_missing(con, "forecast_history", "actual_abs_return_pct", "REAL")
         add_column_if_missing(con, "forecast_history", "actual_volatile", "INTEGER")
+        add_column_if_missing(con, "forecast_history", "selected_model_name", "TEXT")
+        add_column_if_missing(con, "forecast_history", "selected_window_mode", "TEXT")
+        add_column_if_missing(con, "forecast_history", "selected_predicted_return_pct", "REAL")
+        add_column_if_missing(con, "forecast_history", "selected_direction_model_name", "TEXT")
+        add_column_if_missing(con, "forecast_history", "selected_direction_window_mode", "TEXT")
+        add_column_if_missing(con, "forecast_history", "selected_direction_probability_up", "REAL")
+        add_column_if_missing(con, "forecast_history", "adaptive_selection_date", "TEXT")
+        add_column_if_missing(con, "forecast_history", "adaptive_recent_prediction_count", "INTEGER")
+        add_column_if_missing(con, "forecast_history", "adaptive_selection_method", "TEXT")
 
         forecasts = pd.read_sql_query("""
             SELECT
@@ -95,6 +105,10 @@ def main():
                 sentiment_probability_up,
                 volatility_threshold_pct,
                 volatility_probability,
+                selected_model_name, selected_window_mode, selected_predicted_return_pct,
+                selected_direction_model_name, selected_direction_window_mode,
+                selected_direction_probability_up, adaptive_selection_date,
+                adaptive_recent_prediction_count, adaptive_selection_method,
                 model_version
             FROM forecast_history
             WHERE actual_return_pct IS NULL
@@ -203,19 +217,34 @@ def main():
                 actual_volatile,
                 actual_return_pct,
                 actual_direction,
+                selected_model_name, selected_window_mode, selected_predicted_return_pct,
+                selected_direction_model_name, selected_direction_window_mode,
+                selected_direction_probability_up, adaptive_selection_date,
+                adaptive_recent_prediction_count, adaptive_selection_method,
                 model_version
             FROM forecast_history
             WHERE actual_return_pct IS NOT NULL
             ORDER BY target_session_date, forecast_origin_date
         """, con)
 
-    print(f"Total evaluated forecasts: {len(evaluated)}")
+    # Keep all records in SQLite, but restrict the main reported metrics and CSV
+    # to the official capped-dataset model. Legacy full-corpus forecasts remain
+    # preserved for research and are not mixed into the official scorecard.
+    all_evaluated_count = len(evaluated)
+    evaluated = evaluated.loc[evaluated["model_version"].isin(OFFICIAL_MODEL_VERSIONS)].copy()
+    print(f"Total evaluated forecasts in database: {all_evaluated_count}")
+    print(f"Official capped-model evaluated forecasts: {len(evaluated)}")
+    print(f"Legacy/other model forecasts excluded from official metrics: {all_evaluated_count - len(evaluated)}")
 
     if evaluated.empty:
         print(
-            "\nNo outcomes can be evaluated yet. This is normal if the "
-            "price file has no trading session after the forecast date."
+            "\nNo capped-model outcomes can be evaluated yet. This is expected "
+            "until a saved official forecast has a matching later trading session. "
+            "Legacy full-corpus results are intentionally excluded from the official scorecard."
         )
+        OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+        evaluated.to_csv(OUTPUT, index=False)
+        print(f"Saved empty official outcome history to:\n{OUTPUT}")
         return
 
     for prefix in ["market", "sentiment"]:
@@ -259,6 +288,26 @@ def main():
                 ).pow(2).mean()
 
                 print(f"Brier score: {brier:.4f}")
+
+    selected_rows = evaluated.dropna(subset=["selected_predicted_return_pct"]).copy()
+    if not selected_rows.empty:
+        selected_errors = selected_rows["selected_predicted_return_pct"].astype(float) - selected_rows["actual_return_pct"].astype(float)
+        selected_nonflat = selected_rows["actual_direction"].isin(["UP", "DOWN"])
+        selected_actual_up = (selected_rows["actual_direction"] == "UP").astype(float)
+        selected_probs = pd.to_numeric(selected_rows["selected_direction_probability_up"], errors="coerce")
+        valid_probs = selected_nonflat & selected_probs.notna()
+        print("\n===== ADAPTIVELY SELECTED MODEL =====")
+        print(f"Evaluated adaptive forecasts: {len(selected_rows)}")
+        print(f"Return MAE: {selected_errors.abs().mean():.4f}%")
+        print(f"Return RMSE: {(selected_errors.pow(2).mean()) ** 0.5:.4f}%")
+        if selected_nonflat.any():
+            predicted_up = selected_probs >= 0.5
+            actual_up_bool = selected_rows["actual_direction"] == "UP"
+            print(f"Direction accuracy: {(predicted_up[valid_probs] == actual_up_bool[valid_probs]).mean():.1%}" if valid_probs.any() else "Direction accuracy: n/a")
+            if valid_probs.any():
+                print(f"Direction Brier score: {((selected_probs[valid_probs] - selected_actual_up[valid_probs]) ** 2).mean():.4f}")
+        print("Selected model counts:")
+        print(selected_rows["selected_model_name"].value_counts(dropna=False).to_string())
 
     volatility_rows = evaluated.dropna(subset=["volatility_probability", "actual_volatile"])
     if not volatility_rows.empty:
