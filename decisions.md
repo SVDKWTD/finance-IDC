@@ -137,3 +137,13 @@ This file records important project choices, alternatives, and reasons. It also 
 6. Consider alternative models only after the evaluation protocol is reliable.
 7. If public reproducibility requires data examples, create a small sample dataset instead of committing the full `data/` directory.
 8. Document that trading profitability has not been established; a future strategy evaluation would need costs, slippage, and risk metrics.
+
+
+## Decision 10: Add volatility forecasting without replacing the original forecasts
+
+- **Decision:** Preserve existing Ridge return forecasts and market/news direction probabilities, and add a separate Logistic Regression classifier for unusually large next-session absolute returns.
+- **Volatility label:** The next-session absolute close-to-close return exceeds the trailing 80th percentile of absolute daily returns at the forecast origin; 252-session rolling window and 60-observation minimum history.
+- **Evaluation:** The model is kept fixed for prospective evaluation. Alert indicators at 20% and 30% are informational and must not be optimized on the prospective period.
+- **Storage:** Add volatility fields to the existing SQLite forecast table using additive migrations. A new model version keeps the integrated forecasts distinct from earlier records.
+- **Evidence:** Retrospective results showed ROC-AUC 0.651 and Brier score 0.1493 compared with a 0.1624 historical-prevalence baseline, but performance varied substantially over time. This is a research lead, not a validated trading signal.
+- **Limitation:** Forecast-time availability of same-date news features remains to be verified.

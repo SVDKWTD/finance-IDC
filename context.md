@@ -169,3 +169,18 @@ Only run the commit commands if those files exist and the user has reviewed them
 - Record meaningful methodology changes and reasons in `decisions.md`.
 - Prefer chronological validation for time-series forecasting.
 - Clearly distinguish implemented features from proposed future work.
+
+
+## 12. Integrated volatility model update (2026-10-29)
+
+- `src/generate_forecast.py` now retains the original market-only and market-plus-sentiment return/direction outputs and adds a volatility probability.
+- The volatility label is 1 when the absolute next-session return exceeds the trailing 80th percentile of absolute returns, calculated from information through the forecast-origin session. Window: 252 sessions; minimum threshold history: 60.
+- The volatility classifier is Logistic Regression with median imputation and standardization; its specification is frozen for prospective evaluation.
+- Volatility probability, threshold, 20%/30% alert flags, and later outcome fields are stored in SQLite `forecast_history` using additive schema migrations.
+- `src/record_forecast_outcome.py` now records the absolute realised return and whether the stored threshold was exceeded, while preserving existing return/direction tracking.
+- `run_pipeline.py` already invokes generation and outcome tracking, so no pipeline-order change is needed.
+- Model version is `ridge_logistic_volatility_v2`; this keeps the new integrated forecasts distinct from prior versioned forecast records.
+- Retrospective volatility evaluation on 413 sessions: ROC-AUC 0.651, Brier 0.1493 vs historical-prevalence Brier 0.1624; results varied materially by time period. This is preliminary, not proof of prospective performance.
+- First prospective forecast: feature date 2026-10-27, probability 13.7%, historical threshold 0.9777%. Outcome pending.
+- Key limitation remains: same-date news-feature availability at forecast cutoff has not been fully verified. Do not describe the system as fully leakage-free until this is audited.
+- Do not tune the volatility threshold/model on prospective outcomes. Keep generated datasets and SQLite DB local; `.gitignore` excludes `data/`.

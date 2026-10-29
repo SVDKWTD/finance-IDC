@@ -618,3 +618,36 @@ No investment decisions should be based solely on these forecasts.
 
 **Project focus:** Financial news processing, sentiment analysis, time-series feature engineering, supervised learning, walk-forward evaluation, and reproducible forecasting workflows.
 
+
+
+## 13. Integrated volatility forecasting
+
+The routine pipeline now produces three complementary outputs from the latest completed market session:
+
+1. **Market-only return forecast** — Ridge regression estimate of next-session percentage return.
+2. **Market + news/sentiment forecast** — Ridge regression estimate and a separate Logistic Regression probability for an UP move.
+3. **Next-session volatility probability** — Logistic Regression probability that the absolute next-session close-to-close return exceeds the trailing 80th percentile of absolute daily returns, using a 252-session window with at least 60 observations.
+
+The volatility model uses an expanding historical training set and a fixed specification. Its probability is stored with a historical threshold and exploratory alert indicators at 20% and 30%. These thresholds are not trading recommendations and should not be re-tuned against the prospective evaluation period.
+
+### Outcome tracking
+
+`src/record_forecast_outcome.py` resolves the next available market session from the completed price data and records the actual return. For forecasts with a stored volatility threshold, it also records absolute return and whether the session met the pre-defined volatility criterion. The original return and direction outcomes remain intact.
+
+### Current evidence and limitations
+
+Retrospective evaluation of 413 previously inspected forecasts showed volatility ROC-AUC around 0.651 and a lower Brier score than a historical-prevalence baseline. Performance varied over chronological thirds, and the latest third was close to chance-level ranking. These observations are promising but do not establish prospective reliability.
+
+The first prospective forecast (feature date 2026-10-27) assigned 13.7% probability to volatility with a historical absolute-return threshold of 0.9777%. Its outcome must be evaluated against the next actual completed trading session. One prospective forecast is not sufficient to assess performance.
+
+Same-date news features are only valid if those features were available by the forecast cutoff. The current alignment approximation must be audited before describing the entire workflow as fully leakage-free. Direction probabilities have not been demonstrated to be calibrated, and the return models have not outperformed the mean-return baseline in the recorded walk-forward evaluation.
+
+### Run the routine pipeline
+
+From the repository root in the configured Conda environment:
+
+```cmd
+python run_pipeline.py
+```
+
+The pipeline calls `src/generate_forecast.py` and then `src/record_forecast_outcome.py`. The SQLite schema is extended additively for volatility fields, preserving prior records. New forecast rows use a new model version identifier so previous forecast history is not overwritten.

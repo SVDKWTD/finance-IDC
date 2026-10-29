@@ -10,7 +10,7 @@ from db import DEFAULT_DB_PATH, create_tables, get_connection
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 
 HISTORICAL_NEWS = (
-    PROJECT_DIR / "data" / "processed" / "news_2021_2025_clean.csv"
+    PROJECT_DIR / "data" / "raw" / "historical_news_merged_2021_2025.csv"
 )
 RECENT_NEWS = PROJECT_DIR / "data" / "raw" / "recent_news_2026.csv"
 PRICES_FILE = (

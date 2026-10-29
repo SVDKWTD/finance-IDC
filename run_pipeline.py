@@ -8,14 +8,13 @@ ROOT = Path(__file__).resolve().parent
 STEPS = [
     ("Update NIFTY 50 prices", "src/collect_prices.py"),
     ("Collect recent financial news", "src/collect_recent_news.py"),
+    ("Import collected data into database", "src/import_collected_data.py"),
     ("Align news with market sessions", "src/align_news_market.py"),
     ("Score news sentiment (incremental)", "src/analyze_news_sentiment.py"),
     ("Build model dataset", "src/build_model_dataset.py"),
     ("Generate next-session forecast", "src/generate_forecast.py"),
     ("Evaluate available forecast outcomes", "src/record_forecast_outcome.py"),
 ]
-
-
 def main():
     for description, script in STEPS:
         script_path = ROOT / script

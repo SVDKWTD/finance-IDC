@@ -11,6 +11,12 @@ PRICES = ROOT / "data" / "processed" / "nifty50_processed.csv"
 OUTPUT = ROOT / "data" / "processed" / "forecast_outcome_history.csv"
 
 
+def add_column_if_missing(con, table, column, sql_type):
+    existing = {row[1] for row in con.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in existing:
+        con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
+
+
 def load_prices():
     """Load the processed price file using its actual column names."""
     if not PRICES.exists():
@@ -67,6 +73,15 @@ def main():
                 "Run src\\generate_forecast.py first."
             )
 
+        # Additive migration keeps existing historical forecast records intact.
+        add_column_if_missing(con, "forecast_history", "volatility_probability", "REAL")
+        add_column_if_missing(con, "forecast_history", "volatility_threshold_pct", "REAL")
+        add_column_if_missing(con, "forecast_history", "volatility_alert_20", "INTEGER")
+        add_column_if_missing(con, "forecast_history", "volatility_alert_30", "INTEGER")
+        add_column_if_missing(con, "forecast_history", "volatility_training_rate", "REAL")
+        add_column_if_missing(con, "forecast_history", "actual_abs_return_pct", "REAL")
+        add_column_if_missing(con, "forecast_history", "actual_volatile", "INTEGER")
+
         forecasts = pd.read_sql_query("""
             SELECT
                 id,
@@ -78,6 +93,8 @@ def main():
                 sentiment_predicted_return_pct,
                 sentiment_direction,
                 sentiment_probability_up,
+                volatility_threshold_pct,
+                volatility_probability,
                 model_version
             FROM forecast_history
             WHERE actual_return_pct IS NULL
@@ -131,12 +148,22 @@ def main():
                 else:
                     actual_direction = "FLAT"
 
+                threshold = forecast.get("volatility_threshold_pct")
+                if pd.notna(threshold):
+                    actual_abs_return = abs(actual_return)
+                    actual_volatile = int(actual_abs_return > float(threshold))
+                else:
+                    actual_abs_return = None
+                    actual_volatile = None
+
                 con.execute("""
                     UPDATE forecast_history
                     SET target_session_date = ?,
                         actual_return_pct = ?,
                         actual_direction = ?,
-                        evaluated_at_utc = ?
+                        evaluated_at_utc = ?,
+                        actual_abs_return_pct = ?,
+                        actual_volatile = ?
                     WHERE id = ?
                       AND actual_return_pct IS NULL
                 """, (
@@ -144,6 +171,8 @@ def main():
                     actual_return,
                     actual_direction,
                     pd.Timestamp.now(tz="UTC").isoformat(),
+                    actual_abs_return,
+                    actual_volatile,
                     int(forecast["id"]),
                 ))
 
@@ -166,6 +195,12 @@ def main():
                 sentiment_predicted_return_pct,
                 sentiment_direction,
                 sentiment_probability_up,
+                volatility_probability,
+                volatility_threshold_pct,
+                volatility_alert_20,
+                volatility_alert_30,
+                actual_abs_return_pct,
+                actual_volatile,
                 actual_return_pct,
                 actual_direction,
                 model_version
@@ -224,6 +259,24 @@ def main():
                 ).pow(2).mean()
 
                 print(f"Brier score: {brier:.4f}")
+
+    volatility_rows = evaluated.dropna(subset=["volatility_probability", "actual_volatile"])
+    if not volatility_rows.empty:
+        y_vol = volatility_rows["actual_volatile"].astype(int)
+        p_vol = volatility_rows["volatility_probability"].astype(float)
+        brier_vol = ((p_vol - y_vol) ** 2).mean()
+        predicted_vol = p_vol >= 0.30
+        tp = int((predicted_vol & (y_vol == 1)).sum())
+        fp = int((predicted_vol & (y_vol == 0)).sum())
+        fn = int((~predicted_vol & (y_vol == 1)).sum())
+        precision = tp / (tp + fp) if tp + fp else float("nan")
+        recall = tp / (tp + fn) if tp + fn else float("nan")
+        print("\n===== VOLATILITY MODEL (0.30 ALERT THRESHOLD) =====")
+        print(f"Evaluated volatility forecasts: {len(volatility_rows)}")
+        print(f"Volatility Brier score: {brier_vol:.4f}")
+        print(f"Volatility precision: {precision:.1%}" if pd.notna(precision) else "Volatility precision: n/a")
+        print(f"Volatility recall: {recall:.1%}" if pd.notna(recall) else "Volatility recall: n/a")
+        print("These are live/prospective records only where the volatility probability was saved.")
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     evaluated.to_csv(OUTPUT, index=False)

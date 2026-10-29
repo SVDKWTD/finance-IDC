@@ -34,3 +34,25 @@ data/
 !data/.gitkeep
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+
+# Local databases and backups
+*.db
+*.sqlite
+*.sqlite3
+
+# Python environment and cache
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local configuration and secrets
+.env
+
+# Local review archives
+project_source_review.zip
+
+# Local databases and review archives
+*.db
+*.sqlite
+*.sqlite3
+project_source_review.zip
