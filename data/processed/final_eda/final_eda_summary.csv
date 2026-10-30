@@ -1,0 +1,2 @@
+start_date,end_date,sessions,missing_sentiment_sessions,mean_daily_return_pct,daily_return_std_pct,mean_articles_per_session,sentiment_return_correlation,walk_forward_forecasts
+2021-01-01,2026-10-27,1437,8,0.037677566324499055,0.8889622489092162,12.267919276270007,0.03025671560445255,431

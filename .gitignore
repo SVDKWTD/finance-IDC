@@ -1,58 +1,21 @@
-
 # Python
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
+
+# Environments
 .venv/
 venv/
 env/
-
-# Environment variables and secrets
-.env
-.env.*
-!.env.example
+conda-env/
 
 # Jupyter
 .ipynb_checkpoints/
 
-# Model and tool caches
-.cache/
-huggingface/
-transformers_cache/
-
-# Logs
-*.log
-
-# Local database
-data/market.db
-data/market.db-shm
-data/market.db-wal
-
-# Generated project data
-data/
-
-# Allow folder structure to be tracked if needed
-!data/.gitkeep
-!data/raw/.gitkeep
-!data/processed/.gitkeep
-
-# Local databases and backups
-*.db
-*.sqlite
-*.sqlite3
-
-# Python environment and cache
-.venv/
-__pycache__/
-*.py[cod]
-
-# Local configuration and secrets
+# Secrets
 .env
+.env.*
 
-# Local review archives
-project_source_review.zip
-
-# Local databases and review archives
-*.db
-*.sqlite
-*.sqlite3
-project_source_review.zip
+# Temporary files
+*.tmp
+*.log

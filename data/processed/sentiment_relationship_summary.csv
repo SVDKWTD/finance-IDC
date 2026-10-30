@@ -1,0 +1,8 @@
+metric,value
+usable_sessions,1428.0
+pearson_correlation,0.030256715604452526
+pearson_p_value,0.2531930918379185
+spearman_correlation,0.05408883538821449
+spearman_p_value,0.04098684049841815
+positive_sentiment_mean_return_pct,0.058133027132660636
+negative_sentiment_mean_return_pct,0.007177706935234844

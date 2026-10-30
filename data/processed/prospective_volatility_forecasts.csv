@@ -1,0 +1,2 @@
+forecast_generated_at_local_date,feature_date,target_session_date_if_known,probability_next_session_volatile,historical_abs_return_threshold_pct,volatility_definition,alert_at_0_30,alert_at_0_20,training_rows,training_volatile_rate,model_spec,outcome_abs_return_pct,outcome_volatile,outcome_recorded
+2026-10-29,2026-10-27,,0.1373256898334287,0.9776739520884625,absolute next-session return > trailing 252-session 80% quantile,0,0,1376,0.19040697674418605,"LogisticRegression(max_iter=2000, random_state=42); median imputation; StandardScaler",,,0

@@ -1,0 +1,46 @@
+{
+  "diagnostic_method": "live_full_archive_vs_sampled_historical_training_distribution_v1",
+  "historical_dataset": "model_dataset_sampled_monthly.csv",
+  "live_archive": "news_sentiment_scored.csv",
+  "live_window_days": 7,
+  "normalization_or_clipping_applied": "log1p applied to count features; no clipping",
+  "count_transform": "ln(1 + x)",
+  "transformed_count_features": [
+    "article_count",
+    "unique_sources",
+    "news_7d_article_count",
+    "news_7d_unique_sources"
+  ],
+  "tasks": {
+    "return": {
+      "selected_model_family": "baseline",
+      "selected_window_mode": "expanding",
+      "historical_training_rows": 1438,
+      "features_above_p95": [
+        "news_7d_article_count",
+        "news_7d_unique_sources"
+      ],
+      "features_outside_historical_range": [
+        "news_7d_article_count",
+        "news_7d_unique_sources"
+      ],
+      "status": "REVIEW_REQUIRED"
+    },
+    "direction": {
+      "selected_model_family": "market",
+      "selected_window_mode": "expanding",
+      "historical_training_rows": 1438,
+      "features_above_p95": [
+        "news_7d_article_count",
+        "news_7d_unique_sources"
+      ],
+      "features_outside_historical_range": [
+        "news_7d_article_count",
+        "news_7d_unique_sources"
+      ],
+      "status": "REVIEW_REQUIRED"
+    }
+  },
+  "diagnostic_csv": "live_7d_feature_distribution_diagnostic.csv",
+  "overall_status": "REVIEW_REQUIRED"
+}

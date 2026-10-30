@@ -1,0 +1,11 @@
+test,n,estimate,ci95_lower,ci95_upper,p_value,note
+PCA-2 accuracy (Wilson interval; independence-based),286,0.5384615384615384,0.4805578132345463,0.5953457517333968,0.21425466550479647,Exact binomial p-value assumes independent outcomes.
+Full-feature accuracy (Wilson interval; independence-based),286,0.513986013986014,0.4562606126715126,0.5713406836804669,0.6790073111835658,Exact binomial p-value assumes independent outcomes.
+McNemar exact: PCA-2 vs full correctness,286,0.02447552447552448,,,0.4187541882690154,PCA correct/full wrong=31; PCA wrong/full correct=24. McNemar assumes independent paired units across dates.
+PCA-2 mean Brier score,286,0.25059638964921044,,,,Lower is better.
+Full-feature mean Brier score,286,0.2562797193162654,,,,Lower is better.
+Brier improvement: PCA-2 minus full,286,0.0056833296670549815,,,,Positive means PCA-2 has lower Brier score.
+Block bootstrap: PCA-2 accuracy,286,0.5384615384615384,0.479020979020979,0.5944055944055944,0.19818018198180182,"Circular moving-block bootstrap; block length=5, replicates=10000. Approximate inference; sensitive to block length."
+Block bootstrap: Full-feature accuracy,286,0.513986013986014,0.45104895104895104,0.5769230769230769,0.6956304369563043,"Circular moving-block bootstrap; block length=5, replicates=10000. Approximate inference; sensitive to block length."
+Block bootstrap: Accuracy difference: PCA-2 minus full,286,0.024475524475524476,-0.02097902097902098,0.07342657342657342,0.33806619338066196,"Circular moving-block bootstrap; block length=5, replicates=10000. Approximate inference; sensitive to block length."
+Block bootstrap: Brier improvement: PCA-2 minus full,286,0.0056833296670549755,-0.0005693900729342852,0.011712556392380554,0.0714928507149285,"Circular moving-block bootstrap; block length=5, replicates=10000. Approximate inference; sensitive to block length."
