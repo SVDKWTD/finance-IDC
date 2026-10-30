@@ -1,330 +1,752 @@
-# NIFTY 50 Forecasting Using Financial News Sentiment
+# Finance-IDC: News-Informed NIFTY 50 Forecasting
 
-## 1. Project Overview
+A data-driven forecasting pipeline that combines historical NIFTY 50 market data with financial news sentiment to investigate whether news-derived information can improve next-session market predictions.
 
-This project investigates whether financial-news sentiment and news activity improve the prediction of next-session NIFTY 50 returns and market direction beyond historical market features and simple baseline models.
+The project integrates financial data collection, news processing, sentiment analysis using FinBERT, time-series feature engineering, machine learning, and walk-forward evaluation into a reproducible Python pipeline.
 
-It combines market-price collection, financial-news scraping, sentiment analysis using FinBERT, feature engineering, forecasting, and chronological model evaluation.
+---
 
-The project also includes a **monthly news-sampling experiment** to investigate whether limiting the number of news articles processed during 2026 affects forecasting performance.
+## Overview
 
-This is an exploratory research project, not a validated trading system or investment recommendation.
+Financial markets respond to a combination of historical price movements, economic developments, corporate announcements, investor expectations, and other external events.
 
-## 2. Research Objectives
+This project explores the relationship between financial news and NIFTY 50 market behaviour by combining two primary data sources:
 
-The project aims to:
+- **Market data:** Historical daily OHLCV data for the NIFTY 50 index.
+- **Financial news:** Financial headlines collected through Google News RSS and scored using a pretrained FinBERT model.
 
-- Collect historical and recent NIFTY 50 market data.
-- Collect financial-news headlines relevant to the Indian stock market.
-- Quantify news sentiment using a pretrained financial-language model.
-- Combine market variables, news volume, source diversity, and sentiment features.
-- Predict next-session market returns and UP/DOWN direction.
-- Compare market-only models against models incorporating news features.
-- Evaluate the effect of monthly news sampling while retaining the full-corpus model as the baseline.
-- Track prospective forecasts and evaluate them when the corresponding market outcomes become available.
+The resulting dataset is used to develop and evaluate models for three forecasting tasks:
 
-## 3. Technology Stack
+| Task | Objective | Model |
+|---|---|---|
+| Return prediction | Predict the next trading session's percentage return | Ridge Regression |
+| Direction prediction | Estimate the probability of an UP or DOWN session | Logistic Regression |
+| Volatility prediction | Estimate the probability of unusually high next-session volatility | Logistic Regression |
 
-- **Python** — data collection, processing, modelling, and orchestration
-- **pandas and NumPy** — data manipulation and numerical computation
-- **yfinance** — market-price collection
-- **Google News RSS** — financial-news collection
-- **Hugging Face Transformers / ProsusAI FinBERT** — financial sentiment analysis
-- **scikit-learn** — regression, classification, and evaluation
-- **SQLite** — persistent storage of market data, news records, and forecast history
-- **Matplotlib and Seaborn** — data visualization
-- **Jupyter Notebook** — exploratory and comparative analysis
-- **Git and GitHub** — version control
+The project also investigates whether sentiment-derived features provide predictive information beyond historical market variables.
 
-## 4. Repository Structure
+## Pipeline Architecture
 
 ```text
-finance-IDC-Project/
-├── README.md
-├── context.md
-├── decisions.md
-├── INTEGRATION_NOTES.md
-├── run_pipeline.py
-├── nifty50_news_sampling_analysis.ipynb
-├── src/
-│   ├── collect_prices.py
-│   ├── collect_recent_news.py
-│   ├── import_collected_data.py
-│   ├── align_news_market.py
-│   ├── analyze_news_sentiment.py
-│   ├── build_model_dataset.py
-│   ├── generate_forecast.py
-│   ├── record_forecast_outcome.py
-│   ├── evaluate_walk_forward.py
-│   └── monthly_sampling_experiment.py
-└── data/
-    ├── raw/
-    ├── processed/
-    └── market.db
+         DATA COLLECTION
+         ┌───────────────┐
+         │ Google News   │
+         │ RSS           │
+         └───────┬───────┘
+                 │
+         ┌───────▼───────┐
+         │ Financial     │
+         │ News Archive  │
+         └───────┬───────┘
+                 │
+                 │
+         ┌───────▼───────┐       ┌────────────────┐
+         │ News Cleaning │       │ Yahoo Finance  │
+         │ & Alignment   │       │ NIFTY 50 Data  │
+         └───────┬───────┘       └───────┬────────┘
+                 │                       │
+                 └───────────┬───────────┘
+                             │
+                    ┌────────▼────────┐
+                    │ SQLite Database │
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │ FinBERT         │
+                    │ Sentiment       │
+                    │ Analysis        │
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │ Feature         │
+                    │ Engineering     │
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │ Training Dataset│
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │ Walk-Forward    │
+                    │ Model Selection │
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │ Next-Session    │
+                    │ Forecast        │
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │ Outcome Tracking│
+                    └─────────────────┘
 ```
 
-The structure above highlights the principal files. The `src/` directory may contain additional data-quality, feature-ablation, statistical-testing, and experimental modelling scripts.
+---
 
-Generated data and the SQLite database are stored locally and are excluded from version control where configured in `.gitignore`.
+## 1. Data Collection
 
-## 5. Main Forecasting Workflow
+### Financial News
 
-The primary workflow is orchestrated by `run_pipeline.py`.
+Financial headlines are collected using Google News RSS through predefined search queries covering:
 
-Run it from the project root with the `finance-IDC` Conda environment activated:
+- NIFTY 50 and the Indian stock market
+- Sensex and NSE/BSE
+- Indian economy and macroeconomic developments
+- RBI, inflation, and interest rates
+- Corporate earnings and major Indian companies
 
-```bash
-python run_pipeline.py
-```
+The news collector retains relevant metadata:
 
-The pipeline executes the following stages in order.
+- Headline
+- Publication timestamp
+- Publisher/source
+- Article URL
+- Matched search terms
+- Collection timestamp
 
-### Stage 1 — Collect market prices
+The collector uses incremental updates with an overlapping recent collection window to discover newly indexed articles while retaining previously collected records.
 
-**Script:** `src/collect_prices.py`
+Duplicate articles are primarily identified using their URLs.
 
-Downloads and updates NIFTY 50 price data, including OHLC prices, adjusted closing prices, and trading volume. The processing workflow excludes the incomplete current market session from the completed-session dataset.
+### Market Data
 
-### Stage 2 — Collect recent financial news
+Historical NIFTY 50 index data is obtained through Yahoo Finance using the `yfinance` library and the `^NSEI` ticker.
 
-**Script:** `src/collect_recent_news.py`
+The collected variables include:
 
-Collects recent financial-news headlines using Google News RSS, maintains previously collected records, and deduplicates against historical URLs where available.
+- Open
+- High
+- Low
+- Close
+- Adjusted Close
+- Volume
 
-### Stage 3 — Import collected data
+Derived variables include daily returns, percentage returns, intraday range, and other price-based features.
 
-**Script:** `src/import_collected_data.py`
+The project maintains historical data from January 2021 onward, subject to data availability.
 
-Imports collected news and market records into the local SQLite database, `data/market.db`.
+---
 
-### Stage 4 — Align news with market sessions
+## 2. Data Storage
 
-**Script:** `src/align_news_market.py`
+The project uses SQLite for persistent local storage.
 
-Aligns news publication timestamps with market-session dates and constructs daily news-market features. The output includes news volume, source diversity, market variables, and next-session return targets.
+The main database is:
 
-Timestamp alignment is an approximation of information availability and must be checked against the intended forecast cutoff to prevent look-ahead leakage.
+`data/market.db`
 
-### Stage 5 — Score news sentiment
+Important tables include:
 
-**Script:** `src/analyze_news_sentiment.py`
+| Table | Purpose |
+|---|---|
+| `news` | Stores collected financial news and metadata |
+| `market_prices` | Stores historical market observations |
+| `forecast_history` | Stores generated forecasts |
+| Forecast outcome tables | Track subsequent actual market outcomes |
 
-Uses the pretrained `ProsusAI/finbert` model to score financial headlines. Cached headline scores are reused where possible, and newly encountered headlines are scored incrementally.
+CSV files are used for intermediate datasets, processed data, model inputs, and forecast outputs.
 
-The script generates article-level sentiment scores and daily sentiment aggregates, including:
+The incremental import process uses unique identifiers to prevent duplicate news and price records.
+
+---
+
+## 3. Data Cleaning and Market Alignment
+
+Before sentiment analysis, news records undergo preprocessing.
+
+The implemented cleaning operations include:
+
+- Parsing publication timestamps.
+- Converting timestamps to UTC-aware datetime objects.
+- Converting publication times to Indian Standard Time (IST).
+- Removing invalid timestamps.
+- Removing missing or blank headlines.
+- Trimming leading and trailing whitespace.
+- Deduplicating articles using URLs.
+- Using headline and feature date as a fallback deduplication key.
+
+### News-to-Market Alignment
+
+A critical part of the project is assigning news to the correct market session.
+
+The pipeline uses a **15:45 IST information cutoff** for each actual NIFTY 50 trading session.
+
+An article is assigned to the first available trading-session cutoff that occurs after its publication timestamp.
+
+This ensures that news published after the cutoff is not incorrectly included in that session's features.
+
+For example:
+
+- News published at 11:00 IST is assigned to that trading session.
+- News published at 16:30 IST is assigned to the next available trading session.
+- Weekend and holiday news is assigned to the next available trading session.
+
+The next-session return target is constructed using the subsequent available trading session rather than the next calendar day.
+
+---
+
+## 4. Sentiment Analysis Using FinBERT
+
+The project uses the pretrained **ProsusAI/finbert** model for financial sentiment analysis.
+
+FinBERT is a BERT-based language model adapted to financial text classification.
+
+Unlike traditional sentiment analysis approaches based on word dictionaries, FinBERT uses contextual language representations to classify financial headlines.
+
+### Model Input
+
+The model receives individual financial headlines rather than complete article bodies.
+
+Each headline is passed through the tokenizer and classification model.
+
+The inference configuration includes:
+
+- Maximum sequence length: 512 tokens
+- Batch size: 32
+- Truncation enabled
+- GPU acceleration when CUDA is available
+
+### Sentiment Classification
+
+FinBERT returns three class probabilities:
+
+\[
+P(\text{Positive}),\quad
+P(\text{Negative}),\quad
+P(\text{Neutral})
+\]
+
+A continuous sentiment score is calculated as:
+
+\[
+S = P(\text{Positive}) - P(\text{Negative})
+\]
+
+The resulting score ranges approximately from -1 to +1.
+
+| Score | Interpretation |
+|---|---|
+| Close to +1 | Strong positive sentiment |
+| Close to -1 | Strong negative sentiment |
+| Close to 0 | Weak directional sentiment or balanced positive/negative evidence |
+
+The dominant probability determines the discrete sentiment label.
+
+### Incremental Sentiment Scoring
+
+Previously calculated sentiment scores are cached.
+
+When the pipeline runs again, only headlines without an existing valid sentiment score need to be processed.
+
+This avoids repeatedly running FinBERT on the entire historical archive.
+
+### Daily Sentiment Aggregation
+
+Individual article-level scores are aggregated by market feature date.
+
+The resulting variables include:
 
 - Mean sentiment
 - Median sentiment
-- Positive-news fraction
-- Negative-news fraction
-- Neutral-news fraction
+- Positive headline fraction
+- Negative headline fraction
+- Neutral headline fraction
 
-### Stage 6 — Build the main model dataset
+The three sentiment fractions represent the proportion of headlines assigned to each class.
 
-**Script:** `src/build_model_dataset.py`
+---
 
-Combines market features and daily full-corpus sentiment features into:
+## 5. Historical Sampling and Training Dataset Construction
+
+The project maintains two separate news datasets:
+
+1. The complete scored news archive.
+2. A sampled historical archive used for model training.
+
+The complete scored archive is retained permanently.
+
+### Monthly Sampling Strategy
+
+To limit the influence of months containing exceptionally large numbers of articles, the training dataset uses a monthly sampling strategy.
+
+- Completed months are capped at 500 articles.
+- Months containing fewer than 500 articles are retained in full.
+- Months exceeding the cap are sampled using daily-stratified allocation.
+- The current calendar month remains uncapped.
+- Sampling is performed without replacement.
+- A deterministic date-based seed is used for reproducibility.
+
+A sampling audit records the number of articles before and after sampling, represented days, and daily allocation statistics.
+
+### Training Dataset
+
+The sampled articles are aggregated by feature date and merged with the corresponding market observations.
+
+The resulting dataset contains:
+
+- Market variables
+- Daily news volume
+- Unique source counts
+- Daily sentiment aggregates
+- Seven-calendar-day news features
+- Next-session return targets
+
+The final historical model dataset is:
 
 `data/processed/model_dataset.csv`
 
-This is the **primary dataset used by the main forecasting pipeline**.
+### Historical and Live Feature Construction
 
-It contains market variables, news counts, source counts, sentiment aggregates, and the next-session return target.
+Historical training uses the sampled news archive.
 
-### Stage 7 — Generate forecasts
+Live forecasting uses the complete scored archive to construct the latest seven-calendar-day news features.
 
-**Script:** `src/generate_forecast.py`
+This distinction is intentional.
 
-Fits the configured models and produces next-session return and direction estimates. Forecast records are persisted in SQLite for subsequent evaluation.
+---
 
-### Stage 8 — Evaluate available forecast outcomes
+## 6. Feature Engineering
 
-**Script:** `src/record_forecast_outcome.py`
+The model uses both market-derived and news-derived predictors.
 
-Checks whether previously recorded forecasts have corresponding completed market outcomes and evaluates those that can now be resolved.
+### Market Features
 
-Prospective forecast results should be interpreted cautiously when the number of evaluated outcomes is small.
-
-## 6. Main Dataset and Data Flow
-
-The main model dataset is:
-
-`data/processed/model_dataset.csv`
-
-The daily sentiment features used to build it come from:
-
-`data/processed/news_sentiment_daily.csv`
-
-Other important intermediate files include:
-
-| File | Purpose |
+| Feature | Description |
 |---|---|
-| `data/raw/nifty50_prices.csv` | Raw market-price data |
-| `data/raw/recent_news_2026.csv` | Recently collected news |
-| `data/processed/news_market_alignment.csv` | Article-level news-market alignment |
-| `data/processed/news_market_daily.csv` | Daily market and news features |
-| `data/processed/news_sentiment_scored.csv` | Article-level sentiment scores |
-| `data/processed/news_sentiment_daily.csv` | Full-corpus daily sentiment aggregates |
-| `data/processed/model_dataset.csv` | Main full-corpus modelling dataset |
-| `data/market.db` | SQLite database for stored data and forecast history |
+| Daily return | Current session's percentage return |
+| Lagged returns | Returns from previous trading sessions |
+| 5-session volatility | Rolling standard deviation of returns |
+| 20-session volatility | Longer-term rolling standard deviation |
+| Momentum | Cumulative returns over selected lookback windows |
 
-The precise collection period and row counts can change as new data is collected.
+### News Features
 
-## 7. Monthly News-Sampling Experiment
-
-**Script:** `src/monthly_sampling_experiment.py`
-
-The sampling experiment evaluates the effect of reducing news volume in 2026 without replacing the primary dataset.
-
-### Sampling strategy
-
-- Retain historical articles from 2021–2025.
-- For 2026, retain at most 500 articles per calendar month.
-- Where a month contains more than 500 articles, select a reproducible random sample using a fixed seed strategy.
-- Retain months with fewer than 500 articles in full.
-- Recalculate daily sentiment aggregates from the sampled article corpus.
-- Rebuild a separate sampled model dataset.
-- Evaluate the original and sampled datasets using the same chronological walk-forward procedure and compare predictions on shared dates.
-
-This experiment changes the news-derived features while keeping the market observations and target construction consistent.
-
-### Important separation of datasets
-
-The experiment produces a separate sampled dataset:
-
-`data/processed/model_dataset_sampled_monthly_2026.csv`
-
-The main pipeline continues to use:
-
-`data/processed/model_dataset.csv`
-
-**The sampled dataset is used for comparison, not as a replacement for the full-corpus baseline.**
-
-### Sampling experiment outputs
-
-| File | Purpose |
+| Feature | Description |
 |---|---|
-| `data/processed/news_sentiment_sampled_monthly_2026.csv` | Article-level sampled news corpus |
-| `data/processed/news_sentiment_daily_sampled_monthly_2026.csv` | Daily sentiment calculated from sampled articles |
-| `data/processed/model_dataset_sampled_monthly_2026.csv` | Sampled modelling dataset |
-| `data/processed/monthly_sampling_return_comparison.csv` | Return-prediction comparison metrics |
-| `data/processed/monthly_sampling_direction_comparison.csv` | Direction-prediction comparison metrics |
-| `data/processed/monthly_sampling_paired_predictions.csv` | Original and sampled predictions matched by date |
+| Article count | Number of news articles |
+| Unique sources | Number of distinct publishers |
+| Mean sentiment | Average FinBERT sentiment score |
+| Median sentiment | Median FinBERT sentiment score |
+| Positive fraction | Proportion of positive headlines |
+| Negative fraction | Proportion of negative headlines |
+| Neutral fraction | Proportion of neutral headlines |
 
-Run the experiment independently:
+### Seven-Day Rolling Features
 
-```bash
-python src/monthly_sampling_experiment.py
+The pipeline also calculates news and sentiment features over a trailing seven-calendar-day window.
+
+These include:
+
+- `news_7d_article_count`
+- `news_7d_unique_sources`
+- `news_7d_mean_sentiment`
+- `news_7d_median_sentiment`
+- `news_7d_positive_fraction`
+- `news_7d_negative_fraction`
+- `news_7d_neutral_fraction`
+
+### Logarithmic Transformation
+
+Count-valued predictors are transformed using:
+
+\[
+x' = \log(1+x)
+\]
+
+The transformation is applied to article counts and unique-source counts in both historical and live inputs.
+
+This compresses large count values while preserving their ordering.
+
+Sentiment scores and sentiment fractions are not transformed.
+
+### Missing Values and Scaling
+
+The machine learning pipelines use:
+
+1. Median imputation using `SimpleImputer`.
+2. Feature standardization using `StandardScaler`.
+3. The selected regression or classification estimator.
+
+Preprocessing is fitted within the training pipeline to avoid fitting the scaler or imputer using future test observations.
+
+---
+
+## 7. Machine Learning Models
+
+The project implements three forecasting tasks.
+
+### A. Return Prediction — Ridge Regression
+
+Ridge Regression estimates the next-session percentage return.
+
+The model minimizes:
+
+\[
+\sum_{i=1}^{n}(y_i-X_i\beta)^2
++
+\alpha\sum_{j=1}^{p}\beta_j^2
+\]
+
+The regularization parameter is:
+
+\[
+\alpha = 10
+\]
+
+Two feature configurations are evaluated:
+
+- Market-only model
+- Market + sentiment model
+
+Ridge regularization penalizes large coefficients and helps manage correlated predictors.
+
+### B. Direction Prediction — Logistic Regression
+
+The direction classifier estimates the probability of a positive next-session return.
+
+The binary target is:
+
+\[
+Y =
+\begin{cases}
+1 & \text{if next-session return} > 0\\
+0 & \text{otherwise}
+\end{cases}
+\]
+
+Logistic Regression models:
+
+\[
+P(Y=1|X)=
+\frac{1}{1+e^{-(\beta_0+X\beta)}}
+\]
+
+The output is interpreted as an estimated probability of an UP session.
+
+### C. Volatility Prediction — Logistic Regression
+
+The volatility model estimates the probability of an unusually large next-session absolute return.
+
+The threshold is calculated using:
+
+- 252-session historical lookback
+- Minimum 60 observations
+- 80th percentile of historical absolute daily returns
+
+The target is:
+
+\[
+V_t =
+\mathbb{1}(|r_{t+1}| > Q_{0.80,t})
+\]
+
+The classifier estimates the probability of this event.
+
+The forecast also reports operational alerts at 20% and 30% probability thresholds.
+
+---
+
+## 8. Walk-Forward Validation and Adaptive Model Selection
+
+Because the project deals with time-series data, model evaluation is chronological rather than randomly shuffled.
+
+The pipeline implements two training-window strategies.
+
+### Expanding Window
+
+The model is trained on all eligible historical observations before each prediction.
+
+The training dataset grows as new observations become available.
+
+### Rolling Window
+
+The model uses a fixed historical window of up to 252 trading sessions.
+
+Older observations are discarded as the window moves forward.
+
+### Evaluation Metrics
+
+**Mean Absolute Error (MAE)**
+
+\[
+MAE = \frac{1}{n}\sum_{i=1}^{n}|y_i-\hat y_i|
+\]
+
+Measures average absolute return-prediction error.
+
+**Root Mean Squared Error (RMSE)**
+
+\[
+RMSE =
+\sqrt{\frac{1}{n}\sum_{i=1}^{n}(y_i-\hat y_i)^2}
+\]
+
+Penalizes larger prediction errors more heavily.
+
+**Directional Accuracy**
+
+Measures the proportion of correctly predicted market directions.
+
+**Brier Score**
+
+\[
+BS = \frac{1}{n}\sum_{i=1}^{n}(p_i-o_i)^2
+\]
+
+Evaluates probabilistic direction predictions. Lower values are better.
+
+### Adaptive Selection
+
+The adaptive selector compares the baseline, market-only, and sentiment-based configurations.
+
+For return prediction:
+
+- The expanding mean-return baseline is the reference.
+- A feature model must improve MAE by at least 2% to replace it.
+
+For direction prediction:
+
+- Brier score is the primary selection metric.
+- Accuracy is used as a tie-breaker.
+
+The selector uses recent out-of-sample performance over approximately two calendar months, requiring at least 30 predictions.
+
+If feature models fail the return improvement criterion, the baseline is retained.
+
+---
+
+## 9. Forecast Generation
+
+The forecasting script uses the latest available NIFTY 50 session and the corresponding historical training dataset.
+
+The process:
+
+1. Loads historical training observations.
+2. Constructs market lag and rolling features.
+3. Loads the full scored news archive.
+4. Builds the latest seven-calendar-day news features.
+5. Applies the same count transformations used during training.
+6. Runs adaptive model selection.
+7. Fits the selected historical configuration.
+8. Generates return, direction, and volatility estimates.
+9. Saves the forecast to CSV and SQLite.
+
+### Forecast Outputs
+
+The principal forecast file is:
+
+`data/processed/latest_forecast.csv`
+
+It contains the outputs of the individual models and the adaptively selected configurations.
+
+| Output | Interpretation |
+|---|---|
+| Market-only predicted return | Return estimated using market-related features |
+| Market-only P(UP) | Estimated probability of positive return using market features |
+| Market + sentiment predicted return | Return estimate including sentiment features |
+| Market + sentiment P(UP) | Estimated UP probability including sentiment |
+| Selected predicted return | Output from the adaptive return strategy |
+| Selected direction probability | Output from the adaptive direction strategy |
+| Volatility probability | Estimated probability of exceeding the historical volatility threshold |
+| Volatility threshold | Current historical absolute-return threshold |
+
+The individual market and sentiment model outputs must not be confused with the adaptively selected forecast.
+
+---
+
+## 10. Forecast Outcome Tracking
+
+Forecasts are stored in the SQLite database.
+
+`src/record_forecast_outcome.py` checks whether a later NIFTY 50 trading-session price is available for each pending forecast.
+
+Once the target session becomes available, the system records:
+
+- Actual next-session return
+- Actual market direction
+- Actual absolute return
+- Volatility event outcome
+- Evaluation status
+
+Forecasts from different model versions are kept separate during official performance evaluation.
+
+This enables prospective evaluation of the model using predictions that were genuinely generated before their outcomes became known.
+
+---
+
+## Project Structure
+
+```text
+finance-IDC-Project/
+│
+├── data/
+│   ├── raw/
+│   │   ├── recent_news_2026.csv
+│   │   └── nifty50_prices.csv
+│   │
+│   ├── processed/
+│   │   ├── nifty50_processed.csv
+│   │   ├── news_market_alignment.csv
+│   │   ├── news_market_daily.csv
+│   │   ├── news_sentiment_scored.csv
+│   │   ├── news_sentiment_daily.csv
+│   │   ├── news_sentiment_training.csv
+│   │   ├── sampling_audit.csv
+│   │   ├── model_dataset.csv
+│   │   ├── adaptive_model_selection.csv
+│   │   ├── adaptive_model_selection.json
+│   │   ├── latest_forecast.csv
+│   │   └── forecast_outcome_history.csv
+│   │
+│   └── market.db
+│
+├── notebooks/
+│   └── Finance_IDC_Project_Walkthrough.ipynb
+│
+├── src/
+│   ├── collect_recent_news.py
+│   ├── collect_prices.py
+│   ├── import_collected_data.py
+│   ├── align_news_market.py
+│   ├── analyze_news_sentiment.py
+│   ├── build_training_dataset.py
+│   ├── generate_forecast.py
+│   ├── adaptive_model_selection.py
+│   ├── record_forecast_outcome.py
+│   └── ...
+│
+├── run_pipeline.py
+├── requirements.txt
+├── README.md
+└── .gitignore
 ```
 
-This command generates the sampled data and runs the comparison. It is separate from `run_pipeline.py`, so running the main forecasting pipeline does not automatically replace or regenerate the sampling experiment's outputs.
+*The structure above describes the main project organization; individual generated files may vary depending on the pipeline run.*
 
-## 8. Comparative Analysis Notebook
+---
 
-**Notebook:** `nifty50_news_sampling_analysis.ipynb`
+## Installation and Usage
 
-The notebook is intended to analyze the generated datasets and experimental outputs. It includes:
+### Requirements
 
-- Dataset integrity checks
-- Market-price and return exploration
-- News-volume and source-diversity analysis
-- Full-corpus versus sampled sentiment comparisons
-- Walk-forward performance comparisons
-- Paired prediction and error analysis
-- Missing-value and correlation checks
-- A consolidated summary of findings
+- Python 3.10 or later
+- Conda or another Python environment manager
+- Internet connection for fresh data collection
+- Sufficient memory for FinBERT inference
+- CUDA-compatible GPU (optional)
 
-Place the notebook in the repository root. After running the pipeline and sampling experiment, open it in Jupyter:
+### 1. Clone the repository
 
 ```bash
-jupyter notebook nifty50_news_sampling_analysis.ipynb
+git clone git@github.com:SVDKWTD/finance-IDC.git
+cd finance-IDC
 ```
 
-Run the notebook cells in order. Its input paths must point to the files under `data/processed/`.
-
-The notebook analyzes existing outputs; it does not replace the pipeline or automatically retrain the models unless additional modelling code is explicitly added.
-
-## 9. Forecast Targets and Models
-
-### Return prediction
-
-The regression target is the percentage close-to-close return for the next available trading session:
-
-`target_next_session_return_pct`
-
-The evaluation compares configured market-only and news-augmented models against a simple mean-return baseline.
-
-### Direction prediction
-
-A separate classification model estimates whether the next-session return is positive or negative. Directional accuracy and Brier score are used to evaluate predictions.
-
-### Walk-forward evaluation
-
-The project uses time-ordered walk-forward evaluation to simulate forecasting on successive future dates. This is preferable to randomly splitting time-series observations because it preserves chronological ordering.
-
-Performance should be compared on the same forecast dates and under the same evaluation procedure. Return MAE and RMSE, directional accuracy, and Brier score measure different aspects of performance and should be interpreted together.
-
-## 10. Current Findings and Limitations
-
-In the recorded monthly-sampling experiment, both the full-corpus and sampled evaluations produced 432 forecasts on shared dates spanning 27 January 2025 to 27 October 2026.
-
-The observed results showed that:
-
-- The mean-return baseline had lower return MAE than the evaluated news-augmented models.
-- The monthly-sampled news models performed slightly better than their corresponding full-corpus variants on several reported metrics.
-- Directional performance differed between model variants, and higher directional accuracy did not necessarily correspond to a better Brier score.
-- The available prospective forecast history was too small to establish reliable real-world predictive performance.
-
-These results are exploratory. Small metric differences do not establish statistically significant or persistent improvement. Further validation should examine statistical uncertainty, data leakage, information availability at forecast time, robustness across time periods, and performance against appropriate baselines.
-
-## 11. Setup and Reproducibility
-
-The project was developed on Windows using Anaconda Prompt and a Conda environment named `finance-IDC`.
-
-Activate the environment:
+### 2. Create and activate the environment
 
 ```bash
+conda create -n finance-IDC python=3.11
 conda activate finance-IDC
 ```
 
-Navigate to the project root:
+### 3. Install dependencies
 
-```bat
-cd /d C:\Users\surya\Documents\finance-IDC-Project
+```bash
+pip install -r requirements.txt
 ```
 
-Run the main workflow:
+PyTorch installation may need to be configured separately depending on whether CPU or CUDA execution is required. Follow the official PyTorch installation instructions for your hardware.
+
+### 4. Run the complete pipeline
 
 ```bash
 python run_pipeline.py
 ```
 
-Run the separate sampling experiment:
+### 5. Run using existing collected data
 
 ```bash
-python src/monthly_sampling_experiment.py
+python run_pipeline.py --skip-refresh
 ```
 
-Open the analysis notebook:
+This skips the collection refresh and uses the existing local data.
+
+### 6. Run selected stages
 
 ```bash
-jupyter notebook nifty50_news_sampling_analysis.ipynb
+python run_pipeline.py --only align,sentiment,dataset,forecast,outcomes
 ```
 
-Install the project's dependencies using the dependency file provided in the repository, if available. Otherwise, consult the imports in the scripts and install the required packages in the active Conda environment.
+### 7. Explore the project notebook
 
-The first run may require downloading the pretrained FinBERT model. Network access may also be needed for market-price and news collection.
+Open `Finance_IDC_Project_Walkthrough.ipynb` in Jupyter Notebook or JupyterLab to inspect the datasets, understand preprocessing, visualize sentiment distributions, and examine the forecasting methodology.
 
-For reproducible experiments, preserve the sampling seed, model configuration, input data snapshot, and evaluation period.
+---
 
-## 12. Data, Privacy, and Version Control
+## Key Libraries
 
-The `data/` directory contains generated data, intermediate CSV files, local databases, and experiment outputs. These files may be large and can change after every collection or processing run.
+| Library | Application |
+|---|---|
+| Pandas | Data manipulation and processing |
+| NumPy | Numerical computations |
+| yfinance | NIFTY 50 price collection |
+| Requests / Feedparser | Financial-news RSS collection |
+| SQLite3 | Persistent data storage |
+| Transformers | FinBERT sentiment analysis |
+| PyTorch | Deep-learning inference backend |
+| Scikit-learn | Regression, classification, preprocessing, and evaluation |
+| Matplotlib | Data visualization |
+| Jupyter | Interactive analysis and documentation |
 
-The repository is configured to keep generated data out of version control. Do not commit API credentials, tokens, `.env` files, local database files, or virtual environments.
+---
 
-To reproduce the analysis, first generate the required data locally, then run the sampling experiment and notebook.
+## Limitations and Future Improvements
 
-## 13. Research Disclaimer
+This project is an experimental forecasting system, not a production-grade financial trading system.
 
-This project is intended for academic and exploratory analysis. Forecasts are estimates, not investment advice. Historical walk-forward results do not guarantee future performance, and no trading strategy or reliable predictive edge has been established by the results reported here.
+Important limitations include:
+
+1. **News coverage:** Google News RSS search results do not represent every financial article published.
+2. **Headline-only sentiment:** FinBERT analyses headlines rather than complete article content.
+3. **Sampling bias:** Monthly sampling may change the distribution of topics, publishers, and event types represented in historical training data.
+4. **Historical/live feature differences:** Historical training uses sampled news, whereas live forecasts use the complete archive.
+5. **Probability calibration:** Logistic Regression outputs have not yet been demonstrated to be well calibrated.
+6. **Limited prospective evaluation:** A successful pipeline execution does not establish predictive performance.
+7. **Market data availability:** Forecast quality depends on timely and accurate market-price updates.
+8. **Trading costs:** Transaction costs, slippage, position sizing, and portfolio risk have not been fully modelled.
+
+Future work should prioritize:
+
+- Collecting and evaluating more prospective forecasts.
+- Testing probability calibration.
+- Improving news relevance and source coverage.
+- Investigating the effects of historical sampling on live predictions.
+- Evaluating model stability across different market regimes.
+- Incorporating realistic transaction costs before considering any trading application.
+
+---
+
+## Current Project Status
+
+The pipeline successfully executes the following stages:
+
+- Incremental news and market-data processing.
+- News-market alignment.
+- FinBERT sentiment scoring.
+- Historical dataset construction.
+- Feature engineering.
+- Walk-forward adaptive model selection.
+- Next-session return, direction, and volatility forecasting.
+- Forecast outcome tracking.
+
+However, successful execution should not be confused with demonstrated predictive skill. The current evaluation has not established that sentiment-based models consistently outperform the historical mean-return baseline.
+
+The primary objective is to build a reproducible framework for studying the relationship between financial news sentiment and short-term market dynamics.
+
+---
+
+## Disclaimer
+
+This project is intended for academic and research purposes only.
+
+Forecasts are model-generated estimates and should not be interpreted as financial advice, guaranteed market predictions, or recommendations to buy or sell securities.
