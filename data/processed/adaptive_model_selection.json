@@ -1,7 +1,7 @@
 {
-  "selection_date": "2026-10-28",
-  "evaluation_start_date": "2026-08-28",
-  "evaluation_end_date": "2026-10-28",
+  "selection_date": "2026-11-02",
+  "evaluation_start_date": "2026-09-02",
+  "evaluation_end_date": "2026-11-02",
   "recent_prediction_count": 41,
   "minimum_predictions": 30,
   "rolling_window_sessions": 252,

@@ -1,0 +1,570 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Finance-IDC: News-Informed NIFTY 50 Forecasting — Full Walkthrough\n",
+    "\n",
+    "This notebook consolidates the complete project pipeline:\n",
+    "1. Data collection overview\n",
+    "2. Data cleaning & news–market alignment\n",
+    "3. Sentiment analysis (FinBERT)\n",
+    "4. Sampling strategy & audit\n",
+    "5. Feature engineering & training dataset\n",
+    "6. Model evaluation & walk-forward validation\n",
+    "7. Latest forecast snapshot\n",
+    "8. Findings & limitations\n",
+    "\n",
+    "**Run top-to-bottom.** Figures are saved to `data/processed/fig_*.png`.\n",
+    "\n",
+    "> This notebook is defensive: every load is guarded with `if file.exists()`, and column names are auto-detected where possible, so it will not crash on partial data."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import pandas as pd\n",
+    "import numpy as np\n",
+    "import matplotlib.pyplot as plt\n",
+    "import seaborn as sns\n",
+    "import json\n",
+    "import sqlite3\n",
+    "from pathlib import Path\n",
+    "\n",
+    "sns.set_theme(style=\"whitegrid\", palette=\"muted\")\n",
+    "plt.rcParams[\"figure.figsize\"] = (12, 5)\n",
+    "plt.rcParams[\"figure.dpi\"] = 110\n",
+    "\n",
+    "DATA = Path(\"data\")\n",
+    "RAW = DATA / \"raw\"\n",
+    "PROC = DATA / \"processed\"\n",
+    "DB = DATA / \"market.db\"\n",
+    "PROC.mkdir(parents=True, exist_ok=True)\n",
+    "\n",
+    "pd.set_option(\"display.max_columns\", 60)\n",
+    "pd.set_option(\"display.width\", 160)\n",
+    "\n",
+    "def save(fig, name):\n",
+    "    out = PROC / f\"fig_{name}.png\"\n",
+    "    fig.savefig(out, bbox_inches=\"tight\")\n",
+    "    plt.show()\n",
+    "    print(f\"saved -> {out}\")\n",
+    "\n",
+    "def load(path, **kw):\n",
+    "    p = Path(path)\n",
+    "    if not p.exists():\n",
+    "        print(f\"[skip] not found: {p}\")\n",
+    "        return None\n",
+    "    df = pd.read_csv(p, **kw)\n",
+    "    print(f\"[ok] {p.name}: {df.shape}\")\n",
+    "    return df\n",
+    "\n",
+    "print(\"Setup complete.\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 0. Schema Diagnostics\n",
+    "\n",
+    "Run this first. It prints the columns of every expected file so the sections below can adapt. If a file is missing it is simply skipped."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "candidate_files = {\n",
+    "    \"prices_raw\": RAW / \"nifty50_prices.csv\",\n",
+    "    \"news_raw\": RAW / \"recent_news_2026.csv\",\n",
+    "    \"nifty50_processed\": PROC / \"nifty50_processed.csv\",\n",
+    "    \"news_market_alignment\": PROC / \"news_market_alignment.csv\",\n",
+    "    \"news_market_daily\": PROC / \"news_market_daily.csv\",\n",
+    "    \"news_sentiment_scored\": PROC / \"news_sentiment_scored.csv\",\n",
+    "    \"news_sentiment_daily\": PROC / \"news_sentiment_daily.csv\",\n",
+    "    \"news_sentiment_training\": PROC / \"news_sentiment_training.csv\",\n",
+    "    \"sampling_audit\": PROC / \"sampling_audit.csv\",\n",
+    "    \"model_dataset\": PROC / \"model_dataset.csv\",\n",
+    "    \"adaptive_model_selection_csv\": PROC / \"adaptive_model_selection.csv\",\n",
+    "    \"adaptive_model_selection_json\": PROC / \"adaptive_model_selection.json\",\n",
+    "    \"latest_forecast\": PROC / \"latest_forecast.csv\",\n",
+    "    \"forecast_outcome_history\": PROC / \"forecast_outcome_history.csv\",\n",
+    "}\n",
+    "\n",
+    "print(\"=== Schema report ===\")\n",
+    "for name, p in candidate_files.items():\n",
+    "    if not Path(p).exists():\n",
+    "        print(f\"{name:32s} MISSING  ({p})\")\n",
+    "        continue\n",
+    "    try:\n",
+    "        if p.suffix == \".json\":\n",
+    "            with open(p) as f:\n",
+    "                obj = json.load(f)\n",
+    "            keys = list(obj.keys()) if isinstance(obj, dict) else f\"[{type(obj).__name__}, len={len(obj)}]\"\n",
+    "            print(f\"{name:32s} OK       keys={keys}\")\n",
+    "        else:\n",
+    "            cols = pd.read_csv(p, nrows=0).columns.tolist()\n",
+    "            print(f\"{name:32s} OK       cols={cols}\")\n",
+    "    except Exception as e:\n",
+    "        print(f\"{name:32s} ERROR    {e}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 1. Data Collection Overview\n",
+    "\n",
+    "Two data sources:\n",
+    "- **Market:** NIFTY 50 daily OHLCV via `yfinance` (`^NSEI`)\n",
+    "- **News:** Google News RSS headlines, later scored by FinBERT"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "prices_raw = load(RAW / \"nifty50_prices.csv\")\n",
+    "news_raw   = load(RAW / \"recent_news_2026.csv\")\n",
+    "\n",
+    "if prices_raw is not None:\n",
+    "    print(\"price columns:\", list(prices_raw.columns))\n",
+    "    display(prices_raw.head())\n",
+    "if news_raw is not None:\n",
+    "    print(\"news columns:\", list(news_raw.columns))\n",
+    "    display(news_raw.head())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "if prices_raw is not None:\n",
+    "    date_col = next((c for c in prices_raw.columns if c.lower() in (\"date\",\"timestamp\",\"datetime\")), None)\n",
+    "    close_col = next((c for c in prices_raw.columns if c.lower() == \"close\"), None)\n",
+    "    if date_col and close_col:\n",
+    "        df = prices_raw.copy()\n",
+    "        df[date_col] = pd.to_datetime(df[date_col], errors=\"coerce\")\n",
+    "        df = df.dropna(subset=[date_col]).sort_values(date_col)\n",
+    "        fig, ax = plt.subplots()\n",
+    "        ax.plot(df[date_col], df[close_col], lw=1.2, color=\"navy\")\n",
+    "        ax.set_title(\"NIFTY 50 Close Price\")\n",
+    "        ax.set_ylabel(\"Index Level\")\n",
+    "        save(fig, \"01_nifty_close\")\n",
+    "    else:\n",
+    "        print(\"Could not find date/close columns; inspect above.\")\n",
+    "else:\n",
+    "    print(\"prices_raw not available.\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "if news_raw is not None:\n",
+    "    pub_col = next((c for c in news_raw.columns if c.lower() in (\"published\",\"published_at\",\"timestamp\",\"date\")), None)\n",
+    "    if pub_col:\n",
+    "        ts = pd.to_datetime(news_raw[pub_col], errors=\"coerce\", utc=True)\n",
+    "        daily = ts.dt.tz_convert(\"Asia/Kolkata\").dt.date.value_counts().sort_index()\n",
+    "        if len(daily):\n",
+    "            fig, ax = plt.subplots()\n",
+    "            ax.bar(pd.to_datetime(list(daily.index)), daily.values, width=1.0, color=\"teal\")\n",
+    "            ax.set_title(\"Daily News Article Count\")\n",
+    "            ax.set_ylabel(\"# articles\")\n",
+    "            save(fig, \"02_news_volume\")\n",
+    "        else:\n",
+    "            print(\"No valid publication timestamps parsed.\")\n",
+    "    else:\n",
+    "        print(\"Could not find a publication column.\")\n",
+    "else:\n",
+    "    print(\"news_raw not available.\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 2. News–Market Alignment\n",
+    "\n",
+    "The **15:45 IST cutoff** rule: an article is assigned to a session only if it was published *before* 15:45 IST on that trading day. Articles after the cutoff (or on weekends/holidays) go to the next available session. This prevents lookahead bias."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "aligned = load(PROC / \"news_market_alignment.csv\")\n",
+    "if aligned is not None:\n",
+    "    print(\"alignment columns:\", list(aligned.columns))\n",
+    "    display(aligned.head())\n",
+    "\n",
+    "    fdate = next((c for c in aligned.columns if \"feature_date\" in c.lower() or c.lower()==\"date\"), None)\n",
+    "    if fdate:\n",
+    "        counts = aligned.groupby(fdate).size()\n",
+    "        if len(counts):\n",
+    "            fig, ax = plt.subplots()\n",
+    "            ax.hist(counts.values, bins=40, color=\"steelblue\", edgecolor=\"white\")\n",
+    "            ax.set_title(\"Distribution of Articles per Trading Session\")\n",
+    "            ax.set_xlabel(\"articles in session\")\n",
+    "            ax.set_ylabel(\"frequency\")\n",
+    "            save(fig, \"03_articles_per_session\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 3. FinBERT Sentiment\n",
+    "\n",
+    "Continuous score = `P(Positive) − P(Negative)` ∈ [−1, +1]. Headline-level, cached, aggregated daily."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "scored = load(PROC / \"news_sentiment_scored.csv\")\n",
+    "daily_sent = load(PROC / \"news_sentiment_daily.csv\")\n",
+    "\n",
+    "if scored is not None:\n",
+    "    print(\"scored columns:\", list(scored.columns))\n",
+    "    display(scored.head())\n",
+    "if daily_sent is not None:\n",
+    "    print(\"daily_sent columns:\", list(daily_sent.columns))\n",
+    "    display(daily_sent.head())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "if scored is not None:\n",
+    "    score_col = next((c for c in scored.columns if \"sentiment_score\" in c.lower() or c.lower()==\"score\"), None)\n",
+    "    label_col = next((c for c in scored.columns if \"label\" in c.lower() or \"sentiment_label\" in c.lower()), None)\n",
+    "\n",
+    "    fig, axes = plt.subplots(1, 2, figsize=(14, 4))\n",
+    "    if score_col:\n",
+    "        axes[0].hist(scored[score_col].dropna(), bins=60, color=\"purple\", alpha=0.75, edgecolor=\"white\")\n",
+    "        axes[0].set_title(\"Headline Sentiment Score Distribution\")\n",
+    "        axes[0].set_xlabel(score_col)\n",
+    "    else:\n",
+    "        axes[0].set_visible(False)\n",
+    "\n",
+    "    if label_col:\n",
+    "        vc = scored[label_col].value_counts()\n",
+    "        axes[1].pie(vc.values, labels=vc.index, autopct=\"%1.1f%%\")\n",
+    "        axes[1].set_title(\"Sentiment Label Share\")\n",
+    "    else:\n",
+    "        axes[1].set_visible(False)\n",
+    "    save(fig, \"04_sentiment_distribution\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "if daily_sent is not None:\n",
+    "    fdate = next((c for c in daily_sent.columns if \"feature_date\" in c.lower() or c.lower()==\"date\"), None)\n",
+    "    mcol = next((c for c in daily_sent.columns if \"mean\" in c.lower() and \"sentiment\" in c.lower()), None)\n",
+    "    if fdate and mcol:\n",
+    "        d = daily_sent.copy()\n",
+    "        d[fdate] = pd.to_datetime(d[fdate], errors=\"coerce\")\n",
+    "        d = d.dropna(subset=[fdate]).sort_values(fdate)\n",
+    "        fig, ax = plt.subplots()\n",
+    "        ax.plot(d[fdate], d[mcol], lw=0.9, color=\"darkorange\")\n",
+    "        ax.axhline(0, color=\"gray\", ls=\"--\")\n",
+    "        ax.set_title(\"Daily Mean FinBERT Sentiment\")\n",
+    "        save(fig, \"05_daily_sentiment\")\n",
+    "    else:\n",
+    "        print(\"Could not detect date/mean sentiment columns.\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 4. Monthly Sampling Strategy\n",
+    "\n",
+    "Completed months are capped at **500 articles** (daily-stratified). The current month is uncapped. This prevents news-heavy months from dominating training."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "audit = load(PROC / \"sampling_audit.csv\")\n",
+    "if audit is not None:\n",
+    "    print(\"audit columns:\", list(audit.columns))\n",
+    "    display(audit.head())\n",
+    "\n",
+    "    month_col = next((c for c in audit.columns if \"month\" in c.lower() or \"date\" in c.lower()), None)\n",
+    "    before_col = next((c for c in audit.columns if \"before\" in c.lower() or \"n_before\" in c.lower()), None)\n",
+    "    after_col = next((c for c in audit.columns if \"after\" in c.lower() or \"n_after\" in c.lower()), None)\n",
+    "\n",
+    "    if month_col and before_col and after_col:\n",
+    "        a = audit.copy()\n",
+    "        a[month_col] = pd.to_datetime(a[month_col], errors=\"coerce\")\n",
+    "        a = a.dropna(subset=[month_col]).sort_values(month_col)\n",
+    "        fig, ax = plt.subplots()\n",
+    "        ax.plot(a[month_col], a[before_col], label=\"before\", marker=\"o\", ms=3)\n",
+    "        ax.plot(a[month_col], a[after_col], label=\"after\", marker=\"o\", ms=3)\n",
+    "        ax.set_title(\"Monthly Sampling: Articles Before vs After Cap\")\n",
+    "        ax.set_ylabel(\"# articles\")\n",
+    "        ax.legend()\n",
+    "        save(fig, \"06_sampling_audit\")\n",
+    "    else:\n",
+    "        print(\"Could not detect month/before/after columns; inspect schema above.\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 5. Feature Engineering & Training Dataset\n",
+    "\n",
+    "Market features + daily sentiment + 7-day rolling sentiment merged by feature date. Counts log-transformed."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "md = load(PROC / \"model_dataset.csv\")\n",
+    "if md is not None:\n",
+    "    print(\"model_dataset columns:\", list(md.columns))\n",
+    "    display(md.head())\n",
+    "    display(md.describe().T[[\"mean\",\"std\",\"min\",\"max\"]].head(25))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "if md is not None:\n",
+    "    numeric = md.select_dtypes(include=[np.number]).copy()\n",
+    "    if len(numeric.columns) >= 2:\n",
+    "        corr = numeric.corr()\n",
+    "        fig, ax = plt.subplots(figsize=(12, 9))\n",
+    "        sns.heatmap(corr, cmap=\"RdBu_r\", center=0, ax=ax, cbar_kws={\"shrink\": 0.7})\n",
+    "        ax.set_title(\"Feature Correlation Matrix\")\n",
+    "        save(fig, \"07_correlation\")\n",
+    "    else:\n",
+    "        print(\"Not enough numeric columns for a correlation heatmap.\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "if md is not None:\n",
+    "    ycol = next((c for c in md.columns if \"next\" in c.lower() and \"return\" in c.lower()), None)\n",
+    "    x1 = next((c for c in md.columns if c.lower()==\"mean_sentiment\" or (\"mean\" in c.lower() and \"sentiment\" in c.lower())), None)\n",
+    "    x2 = next((c for c in md.columns if \"7d\" in c.lower() and \"sentiment\" in c.lower()), None)\n",
+    "\n",
+    "    if ycol and (x1 or x2):\n",
+    "        fig, axes = plt.subplots(1, 2, figsize=(14, 5))\n",
+    "        if x1:\n",
+    "            axes[0].scatter(md[x1], md[ycol], s=8, alpha=0.5, color=\"teal\")\n",
+    "            axes[0].set_title(f\"{x1} vs {ycol}\")\n",
+    "            axes[0].set_xlabel(x1); axes[0].set_ylabel(ycol)\n",
+    "        else:\n",
+    "            axes[0].set_visible(False)\n",
+    "        if x2:\n",
+    "            axes[1].scatter(md[x2], md[ycol], s=8, alpha=0.5, color=\"crimson\")\n",
+    "            axes[1].set_title(f\"{x2} vs {ycol}\")\n",
+    "            axes[1].set_xlabel(x2); axes[1].set_ylabel(ycol)\n",
+    "        else:\n",
+    "            axes[1].set_visible(False)\n",
+    "        save(fig, \"08_sentiment_vs_return\")\n",
+    "    else:\n",
+    "        print(\"Could not detect sentiment/return columns for scatter.\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 6. Model Evaluation & Walk-Forward Validation\n",
+    "\n",
+    "Adaptive selection chooses between: baseline / market-only / market+sentiment. Return uses MAE; direction uses Brier score."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "sel = load(PROC / \"adaptive_model_selection.csv\")\n",
+    "if sel is not None:\n",
+    "    print(\"selection columns:\", list(sel.columns))\n",
+    "    display(sel.head())\n",
+    "\n",
+    "sel_json_path = PROC / \"adaptive_model_selection.json\"\n",
+    "if sel_json_path.exists():\n",
+    "    with open(sel_json_path) as f:\n",
+    "        obj = json.load(f)\n",
+    "    print(\"--- selection JSON (truncated) ---\")\n",
+    "    print(json.dumps(obj, indent=2)[:1500])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "if sel is not None:\n",
+    "    model_col = next((c for c in sel.columns if \"model\" in c.lower() or \"config\" in c.lower()), None)\n",
+    "    metric_col = next((c for c in sel.columns if c.lower() in (\"mae\",\"mean_mae\") or \"mae\" in c.lower()), None)\n",
+    "    if model_col and metric_col:\n",
+    "        g = sel.groupby(model_col)[metric_col].mean().sort_values()\n",
+    "        if len(g):\n",
+    "            fig, ax = plt.subplots()\n",
+    "            g.plot(kind=\"barh\", ax=ax, color=\"slateblue\")\n",
+    "            ax.set_title(f\"Mean {metric_col} by Model Configuration\")\n",
+    "            ax.set_xlabel(metric_col)\n",
+    "            save(fig, \"09_metric_by_model\")\n",
+    "    else:\n",
+    "        print(\"Could not detect model/metric columns; inspect schema above.\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "hist = load(PROC / \"forecast_outcome_history.csv\")\n",
+    "if hist is not None:\n",
+    "    print(\"history columns:\", list(hist.columns))\n",
+    "    display(hist.head())\n",
+    "\n",
+    "    pred_col = next((c for c in hist.columns if \"predicted\" in c.lower() and \"return\" in c.lower()), None)\n",
+    "    act_col  = next((c for c in hist.columns if \"actual\" in c.lower() and \"return\" in c.lower()), None)\n",
+    "    if pred_col and act_col:\n",
+    "        fig, ax = plt.subplots()\n",
+    "        ax.scatter(hist[pred_col], hist[act_col], s=12, alpha=0.6)\n",
+    "        lo = min(hist[pred_col].min(), hist[act_col].min())\n",
+    "        hi = max(hist[pred_col].max(), hist[act_col].max())\n",
+    "        ax.plot([lo, hi], [lo, hi], \"k--\", lw=0.8)\n",
+    "        ax.set_xlabel(pred_col); ax.set_ylabel(act_col)\n",
+    "        ax.set_title(\"Predicted vs Actual Returns (Prospective)\")\n",
+    "        save(fig, \"10_pred_vs_actual\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "if hist is not None:\n",
+    "    dir_col = next((c for c in hist.columns if \"direction\" in c.lower() and \"correct\" in c.lower()), None)\n",
+    "    date_col = next((c for c in hist.columns if \"date\" in c.lower()), None)\n",
+    "    if dir_col:\n",
+    "        h = hist.copy()\n",
+    "        if date_col:\n",
+    "            h[date_col] = pd.to_datetime(h[date_col], errors=\"coerce\")\n",
+    "            h = h.dropna(subset=[date_col]).sort_values(date_col)\n",
+    "            x = h[date_col]\n",
+    "        else:\n",
+    "            x = np.arange(len(h))\n",
+    "        cum = h[dir_col].astype(float).expanding().mean()\n",
+    "        fig, ax = plt.subplots()\n",
+    "        ax.plot(x, cum, lw=1.2, color=\"green\")\n",
+    "        ax.axhline(0.5, color=\"gray\", ls=\"--\", label=\"random\")\n",
+    "        ax.set_title(\"Cumulative Directional Accuracy\")\n",
+    "        ax.legend()\n",
+    "        save(fig, \"11_direction_accuracy\")\n",
+    "    else:\n",
+    "        print(\"No direction-correct column detected; skipping cumulative accuracy plot.\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 7. Latest Forecast Snapshot"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "fc = load(PROC / \"latest_forecast.csv\")\n",
+    "if fc is not None:\n",
+    "    print(\"forecast columns:\", list(fc.columns))\n",
+    "    display(fc.T)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 8. Findings & Limitations\n",
+    "\n",
+    "### Key Findings\n",
+    "- The pipeline runs end-to-end and produces forecasts, but **sentiment models did not consistently outperform the mean-return baseline**.\n",
+    "- Directional accuracy hovers near random (50%) in the current evaluation window.\n",
+    "- Volatility modeling shows relatively more signal than return/direction.\n",
+    "\n",
+    "### Limitations\n",
+    "1. Headline-only sentiment (no article bodies).\n",
+    "2. Google News RSS ≠ all financial news.\n",
+    "3. Monthly sampling changes the historical distribution.\n",
+    "4. Historical training uses sampled news; live uses the full archive.\n",
+    "5. Logistic probabilities not yet calibrated.\n",
+    "6. Transaction costs / slippage not modeled.\n",
+    "7. Prospective evaluation sample is still small.\n",
+    "\n",
+    "### Conclusion\n",
+    "This is a **research framework**, not a trading system. Its value is methodological rigor — leakage-free alignment, walk-forward validation, honest reporting — rather than demonstrated profitability."
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "name": "python",
+   "version": "3.11"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}

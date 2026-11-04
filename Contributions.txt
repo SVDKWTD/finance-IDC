@@ -1,0 +1,5 @@
+Contributions:
+Khushi: Data Collection from yfinance and google RSS Feed
+Parth: SQLite alignments and sentiment analysis
+Suryansh: feature edits, Dataset training, Walk Forward, Volatility
+and we worked on the final forecasting together capping the data, using adaptive walk forward algorithm, and analysing which method of data alignment and usage for final forecast would be the best. 

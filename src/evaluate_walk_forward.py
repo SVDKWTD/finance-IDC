@@ -1,4 +1,3 @@
-
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +13,7 @@ from sklearn.metrics import (
     accuracy_score,
     brier_score_loss,
 )
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data" / "processed"
@@ -62,9 +62,7 @@ def main():
     df["volatility_5"] = df["daily_return_pct"].rolling(5).std()
     df["sentiment_lag1"] = df["mean_sentiment"].shift(1)
 
-    required_columns = (
-        MARKET_FEATURES + SENTIMENT_FEATURES + [TARGET]
-    )
+    required_columns = MARKET_FEATURES + SENTIMENT_FEATURES + [TARGET]
     missing = set(required_columns) - set(df.columns)
 
     if missing:
@@ -86,8 +84,9 @@ def main():
         y_train = train[TARGET].astype(float)
         y_test = float(test[TARGET].iloc[0])
 
-        # Historical-mean baseline.
-        predictions = {"Mean baseline": float(y_train.mean())}
+        # Assignment baseline: tomorrow's price equals today's price.
+        # This means the predicted next-session return is exactly 0%.
+        predictions = {"Today = tomorrow baseline": 0.0}
 
         # Return prediction models.
         for name, features in [
@@ -112,7 +111,9 @@ def main():
             ].iloc[0],
             "actual_return_pct": y_test,
             "actual_up": int(y_test > 0),
-            "mean_baseline_prediction_pct": predictions["Mean baseline"],
+            "persistence_baseline_prediction_pct": predictions[
+                "Today = tomorrow baseline"
+            ],
             "market_prediction_pct": predictions["Market + news volume"],
             "sentiment_prediction_pct": predictions[
                 "Market + news + sentiment"
@@ -151,7 +152,10 @@ def main():
     pred.to_csv(PREDICTIONS_FILE, index=False)
 
     models = [
-        ("Mean baseline", "mean_baseline_prediction_pct"),
+        (
+            "Today = tomorrow baseline",
+            "persistence_baseline_prediction_pct",
+        ),
         ("Market + news volume", "market_prediction_pct"),
         ("Market + news + sentiment", "sentiment_prediction_pct"),
     ]
@@ -161,12 +165,14 @@ def main():
         actual = pred["actual_return_pct"]
         estimate = pred[column]
 
-        summary.append({
-            "model": name,
-            "MAE_pct": mean_absolute_error(actual, estimate),
-            "RMSE_pct": np.sqrt(mean_squared_error(actual, estimate)),
-            "R2": r2_score(actual, estimate),
-        })
+        summary.append(
+            {
+                "model": name,
+                "MAE_pct": mean_absolute_error(actual, estimate),
+                "RMSE_pct": np.sqrt(mean_squared_error(actual, estimate)),
+                "R2": r2_score(actual, estimate),
+            }
+        )
 
     return_summary = pd.DataFrame(summary)
     return_summary.to_csv(RETURN_COMPARISON_FILE, index=False)
@@ -178,22 +184,27 @@ def main():
         actual = pred["actual_up"]
         high_confidence = pred[f"{name}_confidence"] >= 0.60
 
-        direction_summary.append({
-            "model": name,
-            "accuracy": accuracy_score(
-                actual, pred[f"{name}_predicted_up"]
-            ),
-            "brier_score": brier_score_loss(actual, probabilities),
-            "high_confidence_count": int(high_confidence.sum()),
-            "high_confidence_accuracy": (
-                accuracy_score(
-                    actual[high_confidence],
-                    pred.loc[high_confidence, f"{name}_predicted_up"],
-                )
-                if high_confidence.any()
-                else np.nan
-            ),
-        })
+        direction_summary.append(
+            {
+                "model": name,
+                "accuracy": accuracy_score(
+                    actual, pred[f"{name}_predicted_up"]
+                ),
+                "brier_score": brier_score_loss(actual, probabilities),
+                "high_confidence_count": int(high_confidence.sum()),
+                "high_confidence_accuracy": (
+                    accuracy_score(
+                        actual[high_confidence],
+                        pred.loc[
+                            high_confidence,
+                            f"{name}_predicted_up",
+                        ],
+                    )
+                    if high_confidence.any()
+                    else np.nan
+                ),
+            }
+        )
 
     direction_summary = pd.DataFrame(direction_summary)
     direction_summary.to_csv(DIRECTION_COMPARISON_FILE, index=False)
@@ -210,7 +221,10 @@ def main():
 
     print("\n===== EVALUATION PERIOD =====")
     print(f"Forecasts: {len(pred)}")
-    print(f"From: {pred['date'].min().date()} to {pred['date'].max().date()}")
+    print(
+        f"From: {pred['date'].min().date()} "
+        f"to {pred['date'].max().date()}"
+    )
 
     print("\nSaved:")
     print(PREDICTIONS_FILE)

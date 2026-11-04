@@ -1,4 +1,3 @@
-
 from pathlib import Path
 
 import numpy as np
@@ -78,19 +77,23 @@ def main():
     print("===== CHRONOLOGICAL HOLDOUT =====")
     print(f"Training sessions: {len(train)}")
     print(f"Testing sessions:  {len(test)}")
-    print(f"Training dates: {train['date'].min().date()} to "
-          f"{train['date'].max().date()}")
-    print(f"Testing dates:  {test['date'].min().date()} to "
-          f"{test['date'].max().date()}")
+    print(
+        f"Training dates: {train['date'].min().date()} to "
+        f"{train['date'].max().date()}"
+    )
+    print(
+        f"Testing dates:  {test['date'].min().date()} to "
+        f"{test['date'].max().date()}"
+    )
 
-    # Return forecasts: compare a mean baseline, market-only model,
-    # and market-plus-sentiment model.
+    # Return forecasts: compare the zero-return persistence baseline,
+    # market-only model, and market-plus-sentiment model.
     return_models = [
         (
-            "Mean baseline",
-            make_pipeline_model(DummyRegressor(strategy="mean")),
-            train[["previous_return_pct"]],
-            test[["previous_return_pct"]],
+            "Today = tomorrow baseline",
+            DummyRegressor(strategy="constant", constant=0.0),
+            X_train_market,
+            X_test_market,
         ),
         (
             "Market + news volume",
@@ -257,8 +260,10 @@ def main():
     ]
     if len(high_conf):
         print(f"Forecasts with confidence >= 60%: {len(high_conf)}")
-        print(f"Observed directional accuracy: "
-              f"{high_conf['direction_correct'].mean():.3f}")
+        print(
+            f"Observed directional accuracy: "
+            f"{high_conf['direction_correct'].mean():.3f}"
+        )
     else:
         print("No forecasts reached the 60% confidence threshold.")
 

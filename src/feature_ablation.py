@@ -1,3 +1,10 @@
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message="The `probability` parameter was deprecated.*",
+    category=FutureWarning,
+)
 
 from pathlib import Path
 
@@ -14,6 +21,7 @@ from sklearn.metrics import (
     accuracy_score,
     brier_score_loss,
 )
+
 
 # ============================================================
 # CONFIGURATION
@@ -33,6 +41,11 @@ INITIAL_TRAIN_FRACTION = 0.70
 RIDGE_ALPHA = 10.0
 HIGH_CONFIDENCE_THRESHOLD = 0.60
 
+
+# ============================================================
+# FEATURE GROUPS
+# ============================================================
+
 # Market behaviour, without news features.
 MARKET_CORE = [
     "daily_return_pct",
@@ -42,7 +55,14 @@ MARKET_CORE = [
     "volatility_5",
 ]
 
-# News-volume features calculated from the monthly-sampled corpus.
+# External market variables.
+EXTERNAL_MARKET = [
+    "gold_return_pct",
+    "usd_inr_return_pct",
+    "brent_return_pct",
+]
+
+# News-volume features.
 NEWS_VOLUME = [
     "article_count",
     "unique_sources",
@@ -57,7 +77,7 @@ SENTIMENT = [
     "sentiment_lag1",
 ]
 
-FULL_FEATURES = MARKET_CORE + NEWS_VOLUME + SENTIMENT
+FULL_FEATURES = MARKET_CORE + EXTERNAL_MARKET + NEWS_VOLUME + SENTIMENT
 
 
 # ============================================================
@@ -79,6 +99,9 @@ def prepare_data():
         "target_next_session_date",
         TARGET,
         "daily_return_pct",
+        "gold_return_pct",
+        "usd_inr_return_pct",
+        "brent_return_pct",
         "article_count",
         "unique_sources",
         "mean_sentiment",
@@ -115,13 +138,16 @@ def prepare_data():
 
 def make_variants():
     variants = {
-        "Mean baseline": [],
+        "Today = tomorrow baseline": [],
         "Market core only": MARKET_CORE,
-        "Market + news volume": MARKET_CORE + NEWS_VOLUME,
-        "Market + sentiment": MARKET_CORE + SENTIMENT,
+        "External markets only": EXTERNAL_MARKET,
+        "Market core + external markets": MARKET_CORE + EXTERNAL_MARKET,
+        "Market + news volume": MARKET_CORE + EXTERNAL_MARKET + NEWS_VOLUME,
+        "Market + sentiment": MARKET_CORE + EXTERNAL_MARKET + SENTIMENT,
         "Full model": FULL_FEATURES,
         "Full model without neutral_fraction": [
-            f for f in FULL_FEATURES if f != "neutral_fraction"
+            feature for feature in FULL_FEATURES
+            if feature != "neutral_fraction"
         ],
     }
 
@@ -133,10 +159,19 @@ def make_variants():
             f for f in FULL_FEATURES if f != feature
         ]
 
-    # Also test removing entire groups from the full model.
-    variants["Full minus news volume"] = MARKET_CORE + SENTIMENT
-    variants["Full minus sentiment"] = MARKET_CORE + NEWS_VOLUME
-    variants["Full minus market core"] = NEWS_VOLUME + SENTIMENT
+    # Remove entire feature groups from the full model.
+    variants["Full minus external markets"] = (
+        MARKET_CORE + NEWS_VOLUME + SENTIMENT
+    )
+    variants["Full minus news volume"] = (
+        MARKET_CORE + EXTERNAL_MARKET + SENTIMENT
+    )
+    variants["Full minus sentiment"] = (
+        MARKET_CORE + EXTERNAL_MARKET + NEWS_VOLUME
+    )
+    variants["Full minus market core"] = (
+        EXTERNAL_MARKET + NEWS_VOLUME + SENTIMENT
+    )
 
     return variants
 
@@ -169,9 +204,10 @@ def evaluate_variant(df, variant_name, features):
             "actual_up": actual_up,
         }
 
-        # Historical-mean return baseline.
-        if variant_name == "Mean baseline":
-            record["return_prediction_pct"] = float(y_train.mean())
+        # Persistence baseline: today's close is tomorrow's close.
+        # Therefore, the predicted next-session return is 0%.
+        if variant_name == "Today = tomorrow baseline":
+            record["return_prediction_pct"] = 0.0
             records.append(record)
             continue
 
@@ -199,6 +235,7 @@ def evaluate_variant(df, variant_name, features):
                     class_weight=None,
                 ),
             )
+
             classifier.fit(train[features], y_direction)
             p_up = float(
                 classifier.predict_proba(test[features])[0, 1]

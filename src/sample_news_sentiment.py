@@ -1,6 +1,7 @@
-
 from pathlib import Path
+from datetime import date
 
+import numpy as np
 import pandas as pd
 
 
@@ -20,8 +21,54 @@ OUTPUT_DAILY = (
     / "news_sentiment_daily_sampled.csv"
 )
 
-MAX_ARTICLES_PER_DAY = 250
+ARTICLES_PER_SAMPLE = 20
+NUMBER_OF_SAMPLES = 1000
 RANDOM_SEED = 42
+
+
+def select_representative_sample(group, rng):
+    """
+    Draw repeated random samples of 20 articles and retain the sample
+    whose mean sentiment is closest to the mean of all sample means.
+
+    Sampling is without replacement within each draw. Different draws
+    may contain some of the same articles.
+    """
+    if len(group) <= ARTICLES_PER_SAMPLE:
+        selected = group.copy()
+        selected["sampling_sample_mean"] = selected["sentiment_score"].mean()
+        selected["sampling_target_mean"] = selected["sentiment_score"].mean()
+        selected["sampling_method"] = "all_articles_under_cap"
+        return selected
+
+    sentiment_values = group["sentiment_score"].to_numpy(dtype=float)
+
+    sample_means = np.empty(NUMBER_OF_SAMPLES, dtype=float)
+    sample_positions = []
+
+    for sample_index in range(NUMBER_OF_SAMPLES):
+        positions = rng.choice(
+            len(group),
+            size=ARTICLES_PER_SAMPLE,
+            replace=False,
+        )
+        sample_positions.append(positions)
+        sample_means[sample_index] = sentiment_values[positions].mean()
+
+    target_mean = float(sample_means.mean())
+
+    # Select the draw whose mean is closest to the average sample mean.
+    selected_index = int(np.argmin(np.abs(sample_means - target_mean)))
+    selected_positions = sample_positions[selected_index]
+
+    selected = group.iloc[selected_positions].copy()
+    selected_sample_mean = float(sample_means[selected_index])
+
+    selected["sampling_sample_mean"] = selected_sample_mean
+    selected["sampling_target_mean"] = target_mean
+    selected["sampling_method"] = "representative_random_sample"
+
+    return selected
 
 
 def main():
@@ -55,6 +102,11 @@ def main():
 
     df["title"] = df["title"].astype(str).str.strip()
     df["feature_date"] = df["feature_date"].astype(str).str.strip()
+    df["sentiment_score"] = pd.to_numeric(
+        df["sentiment_score"],
+        errors="coerce",
+    )
+    df = df.dropna(subset=["sentiment_score"])
     df = df[df["title"] != ""].copy()
 
     # Remove duplicate articles before sampling.
@@ -63,10 +115,12 @@ def main():
         has_url = df["url"] != ""
 
         with_url = df[has_url].drop_duplicates(
-            subset=["url"], keep="last"
+            subset=["url"],
+            keep="last",
         )
         without_url = df[~has_url].drop_duplicates(
-            subset=["title", "feature_date"], keep="last"
+            subset=["title", "feature_date"],
+            keep="last",
         )
 
         df = pd.concat(
@@ -82,39 +136,51 @@ def main():
     if df.empty:
         raise ValueError("No valid scored articles remain after cleaning.")
 
-    original_counts = df.groupby("feature_date").size()
+    # Use the system date to identify the current calendar month.
+    today = date.today()
+    current_month = today.strftime("%Y-%m")
 
-    # Sample each day separately. This avoids pandas GroupBy.apply
-    # Preserve all historical articles.
-    # Sample only high-volume days in 2026.
+    print(f"Current month being sampled: {current_month}")
+    print(f"Articles per random sample: {ARTICLES_PER_SAMPLE}")
+    print(f"Random samples per day: {NUMBER_OF_SAMPLES}")
+
+    original_counts = df.groupby("feature_date").size()
     sampled_groups = []
 
+    # One deterministic random stream for reproducible reruns.
+    rng = np.random.default_rng(RANDOM_SEED)
+
     for feature_date, group in df.groupby("feature_date", sort=True):
-        if feature_date >= "2026-01-01" and len(group) > MAX_ARTICLES_PER_DAY:
-            sampled_group = group.sample(
-                n=MAX_ARTICLES_PER_DAY,
-                replace=False,
-                random_state=RANDOM_SEED,
-            )
+        # Apply the new sampling procedure only to the current month.
+        if (
+            feature_date.startswith(current_month)
+            and len(group) > ARTICLES_PER_SAMPLE
+        ):
+            selected = select_representative_sample(group, rng)
         else:
-            sampled_group = group.copy()
+            selected = group.copy()
+            selected["sampling_sample_mean"] = selected[
+                "sentiment_score"
+            ].mean()
+            selected["sampling_target_mean"] = selected[
+                "sentiment_score"
+            ].mean()
+            selected["sampling_method"] = "not_sampled"
 
-        sampled_groups.append(sampled_group)
+        sampled_groups.append(selected)
 
-    sampled = pd.concat(
-        sampled_groups,
-        ignore_index=True,
-    )
- # Save article-level sample separately; original files are untouched.
+    sampled = pd.concat(sampled_groups, ignore_index=True)
+
+    # Preserve the selected article rows and sampling metadata.
     sampled.to_csv(
         OUTPUT_ARTICLES,
         index=False,
         encoding="utf-8-sig",
     )
 
-    # Recalculate daily sentiment using sampled articles only.
+    # Recalculate daily features using the retained articles.
     daily = (
-        sampled.groupby("feature_date")
+        sampled.groupby("feature_date", as_index=False)
         .agg(
             article_count=("title", "size"),
             mean_sentiment=("sentiment_score", "mean"),
@@ -131,8 +197,10 @@ def main():
                 "sentiment_label",
                 lambda x: (x == "neutral").mean(),
             ),
+            sampling_sample_mean=("sampling_sample_mean", "first"),
+            sampling_target_mean=("sampling_target_mean", "first"),
+            sampling_method=("sampling_method", "first"),
         )
-        .reset_index()
         .rename(columns={"feature_date": "date"})
         .sort_values("date")
         .reset_index(drop=True)
@@ -145,29 +213,40 @@ def main():
     )
 
     sampled_counts = sampled.groupby("feature_date").size()
+    current_month_mask = sampled["feature_date"].str.startswith(current_month)
+    current_month_counts = (
+        sampled.loc[current_month_mask]
+        .groupby("feature_date")
+        .size()
+    )
 
     print("\n===== DAILY SENTIMENT SAMPLING REPORT =====")
     print(f"Original unique articles: {len(df):,}")
     print(f"Sampled articles: {len(sampled):,}")
     print(f"Days represented: {len(daily):,}")
-    print(f"Cap per day: {MAX_ARTICLES_PER_DAY}")
+    print(f"Sample size: {ARTICLES_PER_SAMPLE}")
+    print(f"Random draws per sampled day: {NUMBER_OF_SAMPLES}")
     print(f"Random seed: {RANDOM_SEED}")
     print(
-        "Days exceeding cap before sampling:",
-        int((original_counts > MAX_ARTICLES_PER_DAY).sum()),
+        "Current-month days exceeding 20 before sampling:",
+        int(
+            (
+                original_counts[
+                    original_counts.index.str.startswith(current_month)
+                ] > ARTICLES_PER_SAMPLE
+            ).sum()
+        ),
     )
     print(
-        "Maximum sampled articles in any day:",
-        int(sampled_counts.max()),
-    )
-    print(
-        "Days with fewer than cap:",
-        int((sampled_counts < MAX_ARTICLES_PER_DAY).sum()),
+        "Maximum retained articles on a current-month day:",
+        int(current_month_counts.max()) if not current_month_counts.empty else 0,
     )
 
-    # Confirm the cap was respected.
-    if (sampled_counts > MAX_ARTICLES_PER_DAY).any():
-        raise RuntimeError("Sampling validation failed: daily cap exceeded.")
+    if not current_month_counts.empty:
+        if (current_month_counts > ARTICLES_PER_SAMPLE).any():
+            raise RuntimeError(
+                "Sampling validation failed: current-month daily cap exceeded."
+            )
 
     print(f"\nSampled article file:\n{OUTPUT_ARTICLES}")
     print(f"Daily sentiment file:\n{OUTPUT_DAILY}")

@@ -1,6 +1,4 @@
-
 from pathlib import Path
-import sqlite3
 
 import pandas as pd
 
@@ -10,7 +8,7 @@ from db import DEFAULT_DB_PATH, create_tables, get_connection
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 
 HISTORICAL_NEWS = (
-    PROJECT_DIR / "data" / "raw" / "historical_news_merged_2021_2025.csv"
+    PROJECT_DIR / "data" / "raw" / "historical_news_2021_2025.csv"
 )
 RECENT_NEWS = PROJECT_DIR / "data" / "raw" / "recent_news_2026.csv"
 PRICES_FILE = (
@@ -39,8 +37,7 @@ def ensure_columns(connection, table, columns):
     for column, sql_type in columns.items():
         if column not in existing:
             connection.execute(
-                f"ALTER TABLE {table} ADD COLUMN "
-                f"{column} {sql_type}"
+                f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"
             )
             print(f"Added column: {table}.{column}")
 
@@ -56,55 +53,88 @@ def load_news_files():
         df = pd.read_csv(path)
         print(f"Loaded {len(df)} rows from {path.name}")
 
-        # Required fields for the database
-        for col in [
-            "title", "published_at", "source", "url",
-            "collected_at", "matched_terms", "requested_month"
-        ]:
+        required_columns = [
+            "title",
+            "published_at",
+            "source",
+            "url",
+            "collected_at",
+            "matched_terms",
+            "requested_month",
+            "market",
+        ]
+
+        for col in required_columns:
             if col not in df.columns:
                 df[col] = None
 
         df["url"] = df["url"].fillna("").astype(str).str.strip()
         df["title"] = df["title"].fillna("").astype(str).str.strip()
 
-        df = df[(df["url"] != "") & (df["title"] != "")].copy()
+        df["market"] = (
+            df["market"]
+            .fillna("unclassified")
+            .astype(str)
+            .str.strip()
+        )
+        df.loc[df["market"] == "", "market"] = "unclassified"
+
+        # Parse each file independently so one file's date format
+        # cannot interfere with parsing the other file.
+        df["published_at"] = pd.to_datetime(
+            df["published_at"],
+            format="mixed",
+            errors="coerce",
+            utc=True,
+        )
+
+        before = len(df)
+        df = df[
+            (df["url"] != "")
+            & (df["title"] != "")
+            & df["published_at"].notna()
+        ].copy()
+
+        print(
+            f"  Valid rows: {len(df)} "
+            f"(removed {before - len(df)} for blank URL/title or invalid date)"
+        )
+
         frames.append(df)
 
     if not frames:
         raise FileNotFoundError("No news CSV files were found.")
 
     news = pd.concat(frames, ignore_index=True)
+    print("Rows after combining files:", len(news))
 
-    # Normalize timestamps and remove records with invalid timestamps.
-    news["published_at"] = pd.to_datetime(
-        news["published_at"], errors="coerce", utc=True
-    )
-    news = news[news["published_at"].notna()].copy()
-
-    # Merge metadata for URLs appearing in more than one file.
     news["matched_terms"] = news["matched_terms"].fillna("").astype(str)
 
+    # Retain one record per URL and market, combining matched search terms.
     news = (
-        news.groupby("url", as_index=False)
-        .agg({
-            "title": "first",
-            "published_at": "min",
-            "source": "first",
-            "collected_at": "first",
-            "matched_terms": lambda values: "; ".join(
-                sorted({
-                    term.strip()
-                    for value in values
-                    for term in value.split(";")
-                    if term.strip()
-                })
+        news.groupby(["url", "market"], as_index=False, sort=False)
+        .agg(
+            title=("title", "first"),
+            published_at=("published_at", "min"),
+            source=("source", "first"),
+            collected_at=("collected_at", "first"),
+            matched_terms=(
+                "matched_terms",
+                lambda values: "; ".join(
+                    sorted(
+                        {
+                            term.strip()
+                            for value in values
+                            for term in value.split(";")
+                            if term.strip()
+                        }
+                    )
+                ),
             ),
-        })
+        )
     )
 
-    news["requested_month"] = (
-        news["published_at"].dt.strftime("%Y-%m")
-    )
+    news["requested_month"] = news["published_at"].dt.strftime("%Y-%m")
     news["published_at"] = news["published_at"].apply(
         lambda value: value.isoformat()
     )
@@ -141,22 +171,28 @@ def import_data():
     prices = load_prices_file()
 
     with get_connection(DEFAULT_DB_PATH) as connection:
-        # Migrate the existing schema safely.
-        ensure_columns(connection, "news", {
-            "matched_terms": "TEXT",
-            "requested_month": "TEXT",
-        })
+        ensure_columns(
+            connection,
+            "news",
+            {
+                "matched_terms": "TEXT",
+                "requested_month": "TEXT",
+                "market": "TEXT NOT NULL DEFAULT 'unclassified'",
+            },
+        )
 
-        ensure_columns(connection, "market_prices", {
-            "adj_close": "REAL",
-            "daily_return": "REAL",
-            "daily_return_pct": "REAL",
-        })
+        ensure_columns(
+            connection,
+            "market_prices",
+            {
+                "adj_close": "REAL",
+                "daily_return": "REAL",
+                "daily_return_pct": "REAL",
+            },
+        )
 
-        # Bulk insert/update news.
-        news_records = []
-        for _, row in news.iterrows():
-            news_records.append({
+        news_records = [
+            {
                 "title": row["title"],
                 "published_at": row["published_at"],
                 "source": clean_value(row["source"]),
@@ -164,30 +200,33 @@ def import_data():
                 "collected_at": clean_value(row["collected_at"]),
                 "matched_terms": clean_value(row["matched_terms"]),
                 "requested_month": clean_value(row["requested_month"]),
-            })
+                "market": clean_value(row["market"]),
+            }
+            for _, row in news.iterrows()
+        ]
 
-        connection.executemany("""
+        connection.executemany(
+            """
             INSERT INTO news (
                 title, published_at, source, url, collected_at,
-                matched_terms, requested_month
+                matched_terms, requested_month, market
             )
             VALUES (
                 :title, :published_at, :source, :url, :collected_at,
-                :matched_terms, :requested_month
+                :matched_terms, :requested_month, :market
             )
-            ON CONFLICT(url) DO UPDATE SET
+            ON CONFLICT(url, market) DO UPDATE SET
                 title = excluded.title,
                 published_at = excluded.published_at,
                 source = COALESCE(excluded.source, news.source),
                 matched_terms = excluded.matched_terms,
                 requested_month = excluded.requested_month
-        """, news_records)
+            """,
+            news_records,
+        )
 
-        # Bulk insert/update daily NIFTY 50 prices.
-        price_records = []
-
-        for _, row in prices.iterrows():
-            price_records.append({
+        price_records = [
+            {
                 "ticker": "^NSEI",
                 "date": row["Date"],
                 "open": clean_value(row["Open"]),
@@ -197,12 +236,13 @@ def import_data():
                 "volume": clean_value(row["Volume"]),
                 "adj_close": clean_value(row.get("Adj_Close")),
                 "daily_return": clean_value(row.get("Daily_Return")),
-                "daily_return_pct": clean_value(
-                    row.get("Daily_Return_Pct")
-                ),
-            })
+                "daily_return_pct": clean_value(row.get("Daily_Return_Pct")),
+            }
+            for _, row in prices.iterrows()
+        ]
 
-        connection.executemany("""
+        connection.executemany(
+            """
             INSERT INTO market_prices (
                 ticker, date, open, high, low, close, volume,
                 adj_close, daily_return, daily_return_pct
@@ -220,9 +260,10 @@ def import_data():
                 adj_close = excluded.adj_close,
                 daily_return = excluded.daily_return,
                 daily_return_pct = excluded.daily_return_pct
-        """, price_records)
+            """,
+            price_records,
+        )
 
-        # Verify the database contents before committing.
         news_count = connection.execute(
             "SELECT COUNT(*) FROM news"
         ).fetchone()[0]
@@ -231,15 +272,17 @@ def import_data():
             "SELECT COUNT(*) FROM market_prices WHERE ticker = '^NSEI'"
         ).fetchone()[0]
 
-        news_dates = connection.execute("""
-            SELECT MIN(published_at), MAX(published_at) FROM news
-        """).fetchone()
+        news_dates = connection.execute(
+            "SELECT MIN(published_at), MAX(published_at) FROM news"
+        ).fetchone()
 
-        price_dates = connection.execute("""
+        price_dates = connection.execute(
+            """
             SELECT MIN(date), MAX(date)
             FROM market_prices
             WHERE ticker = '^NSEI'
-        """).fetchone()
+            """
+        ).fetchone()
 
         print("\n===== SQLITE IMPORT REPORT =====")
         print("Database:", DEFAULT_DB_PATH)

@@ -360,29 +360,29 @@ def build_sampled_model_dataset(sampled_daily):
     unmatched = int((merged["_merge"] == "left_only").sum())
     merged = merged.drop(columns="_merge")
 
-    sentiment_columns_to_check = [
-        "article_count",
-        "unique_sources",
+    # No sampled article on a market session is a valid observation, not a
+    # broken merge. Encode no-news volume as zero. Keep sentiment statistics
+    # missing: they are undefined when there are no articles, and the model's
+    # SimpleImputer will handle them using training-fold medians.
+    for column in ["article_count", "unique_sources"]:
+        merged[column] = merged[column].fillna(0)
+
+    sentiment_value_columns = [
         "mean_sentiment",
         "median_sentiment",
         "positive_fraction",
         "negative_fraction",
         "neutral_fraction",
     ]
-    missing_rows = int(
-        merged[sentiment_columns_to_check].isna().any(axis=1).sum()
+    missing_sentiment_rows = int(
+        merged[sentiment_value_columns].isna().any(axis=1).sum()
     )
 
     print("\n===== SAMPLED MODEL DATASET =====")
     print(f"Market sessions: {len(merged)}")
     print(f"Sessions without matched sentiment: {unmatched}")
-    print(f"Sessions with missing sampled features: {missing_rows}")
-
-    if unmatched or missing_rows:
-        raise ValueError(
-            "Some market sessions lack sampled news features. "
-            "Evaluation stopped to avoid silently changing the dataset."
-        )
+    print(f"Sessions with undefined sentiment values: {missing_sentiment_rows}")
+    print("No-news sessions retained; article/source counts set to zero.")
 
     merged = merged.sort_values("date").reset_index(drop=True)
     merged.to_csv(
@@ -626,11 +626,6 @@ def main():
     directions = pd.DataFrame(
         calculate_direction_metrics(original_paired, "Original")
         + calculate_direction_metrics(sampled_paired, "Monthly sampled")
-    )
-
-    directions = pd.DataFrame(
-        calculate_direction_metrics(original, "Original")
-        + calculate_direction_metrics(sampled, "Monthly sampled")
     )
 
     returns.to_csv(RETURN_RESULTS, index=False)

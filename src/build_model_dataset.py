@@ -1,29 +1,30 @@
-
 from pathlib import Path
 
 import pandas as pd
-
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_DIR / "data" / "processed"
 
 MARKET_FILE = DATA_DIR / "news_market_daily.csv"
-SENTIMENT_FILE = DATA_DIR / "news_sentiment_daily.csv"
+SENTIMENT_FILE = DATA_DIR / "news_sentiment_daily_sampled.csv"
 OUTPUT_FILE = DATA_DIR / "model_dataset.csv"
+
+MARKET_FEATURES = [
+    "gold_return_pct",
+    "usd_inr_return_pct",
+    "brent_return_pct",
+]
+
+SENTIMENT_FEATURES = [
+    "mean_sentiment",
+    "median_sentiment",
+    "positive_fraction",
+    "negative_fraction",
+    "neutral_fraction",
+]
 
 
 def main():
-    print("Loading market and monthly-sampled sentiment datasets...")
-
-    if not MARKET_FILE.exists():
-        raise FileNotFoundError(f"Market file not found: {MARKET_FILE}")
-
-    if not SENTIMENT_FILE.exists():
-        raise FileNotFoundError(
-            f"Sampled sentiment file not found: {SENTIMENT_FILE}\n"
-            "Run src\\monthly_sampling_experiment.py first."
-        )
-
     market = pd.read_csv(MARKET_FILE)
     sentiment = pd.read_csv(SENTIMENT_FILE)
 
@@ -35,95 +36,82 @@ def main():
         sentiment["date"], errors="coerce"
     ).dt.strftime("%Y-%m-%d")
 
-    if market["date"].isna().any():
-        raise ValueError("Invalid dates found in the market dataset.")
-
-    if sentiment["date"].isna().any():
-        raise ValueError("Invalid dates found in sampled sentiment.")
-
-    if market["date"].duplicated().any():
-        raise ValueError("Market dataset contains duplicate dates.")
-
-    if sentiment["date"].duplicated().any():
-        raise ValueError("Sampled sentiment contains duplicate dates.")
-
-    # The sampled file must supply both volume features as well as sentiment.
-    required_sentiment_columns = [
+    required_market = [
         "date",
-        "mean_sentiment",
-        "median_sentiment",
-        "positive_fraction",
-        "negative_fraction",
-        "neutral_fraction",
+        "target_next_session_return_pct",
+        *MARKET_FEATURES,
     ]
 
-    missing = set(required_sentiment_columns) - set(sentiment.columns)
+    missing = set(required_market) - set(market.columns)
     if missing:
         raise ValueError(
-            "Sampled sentiment file is missing columns: "
-            f"{sorted(missing)}"
+            f"Market dataset missing columns: {sorted(missing)}"
         )
 
-    # Remove original-corpus news features before merging.
-    # The model must use volume and source diversity from the sampled corpus.
+    required_sentiment = ["date", *SENTIMENT_FEATURES]
+    missing = set(required_sentiment) - set(sentiment.columns)
+    if missing:
+        raise ValueError(
+            f"Sentiment dataset missing columns: {sorted(missing)}"
+        )
 
+    if market["date"].isna().any():
+        raise ValueError("Market dataset contains invalid dates.")
+
+    if sentiment["date"].isna().any():
+        raise ValueError("Sentiment dataset contains invalid dates.")
+
+    if market["date"].duplicated().any():
+        raise ValueError("Market dataset has duplicate dates.")
+
+    if sentiment["date"].duplicated().any():
+        raise ValueError("Sampled sentiment dataset has duplicate dates.")
 
     combined = market.merge(
-        sentiment[required_sentiment_columns],
+        sentiment[["date", *SENTIMENT_FEATURES]],
         on="date",
         how="left",
         validate="one_to_one",
         indicator=True,
     )
 
-    unmatched = int((combined["_merge"] == "left_only").sum())
+    unmatched = combined.loc[combined["_merge"] != "both", "date"]
+    if not unmatched.empty:
+        raise ValueError(
+            "No sampled sentiment found for market dates: "
+            f"{unmatched.head(10).tolist()}"
+            + (" ..." if len(unmatched) > 10 else "")
+        )
+
     combined = combined.drop(columns="_merge")
 
-    sentiment_features = [
-        "mean_sentiment",
-        "median_sentiment",
-        "positive_fraction",
-        "negative_fraction",
-        "neutral_fraction",
-    ]
-
-    missing_sentiment = int(
-        combined[sentiment_features].isna().any(axis=1).sum()
-    )
-
-    print(f"Market sessions: {len(combined):,}")
-    print(f"Sessions without matched sentiment: {unmatched:,}")
-    print(f"Sessions with missing sampled features: {missing_sentiment:,}")
-
-    if unmatched or missing_sentiment:
+    if combined[SENTIMENT_FEATURES].isna().any().any():
+        missing_counts = combined[SENTIMENT_FEATURES].isna().sum()
         raise ValueError(
-            "The merged dataset has missing sampled-news features. "
-            "Output was not written; inspect the source files."
+            "Missing sampled sentiment values after merge:\n"
+            f"{missing_counts[missing_counts > 0]}"
         )
 
     combined = combined.sort_values("date").reset_index(drop=True)
 
-    combined.to_csv(OUTPUT_FILE, index=False, encoding="utf-8-sig")
+    combined.to_csv(
+        OUTPUT_FILE,
+        index=False,
+        encoding="utf-8-sig",
+    )
 
-    print(f"\nSaved main model dataset to:\n{OUTPUT_FILE}")
-    print("\nDataset shape:", combined.shape)
-    print("\nColumns:")
+    print("Saved:", OUTPUT_FILE.resolve())
+    print("Dataset shape:", combined.shape)
+    print("Date range:", combined["date"].min(), "to", combined["date"].max())
+
+    print("\nNew market features:")
+    print(combined[MARKET_FEATURES].describe().round(4))
+
+    print("\nMissing values:")
+    print(combined[MARKET_FEATURES + SENTIMENT_FEATURES].isna().sum())
+
+    print("\nFinal columns:")
     print(combined.columns.tolist())
-
-    print("\nSample rows:")
-    print(combined.head().to_string(index=False))
-
-    print("\nTarget availability:")
-    print(
-        combined["target_next_session_return_pct"]
-        .describe()
-        .to_string()
-    )
-
-    print(
-        "\nRows with missing next-session target:",
-        combined["target_next_session_return_pct"].isna().sum(),
-    )
 
 
 if __name__ == "__main__":

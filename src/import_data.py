@@ -1,5 +1,5 @@
-
 from pathlib import Path
+
 import pandas as pd
 
 from db import (
@@ -12,7 +12,6 @@ from db import (
 )
 
 
-# Find the project folder.
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 RAW_DIR = PROJECT_DIR / "data" / "raw"
 
@@ -22,18 +21,17 @@ def import_prices():
     file_path = RAW_DIR / "nifty50_prices.csv"
     df = pd.read_csv(file_path)
 
-    # Convert CSV column names to the format expected by db.py.
-    df = df.rename(columns={
-        "Date": "date",
-        "Open": "open",
-        "High": "high",
-        "Low": "low",
-        "Close": "close",
-        "Volume": "volume",
-    })
+    df = df.rename(
+        columns={
+            "Date": "date",
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close",
+            "Volume": "volume",
+        }
+    )
 
-    # Import each row. Existing ticker-date records are updated,
-    # not duplicated.
     for _, row in df.iterrows():
         record = row.where(pd.notna(row), None).to_dict()
         upsert_market_price("^NSEI", record)
@@ -51,11 +49,13 @@ def import_news():
     for _, row in df.iterrows():
         record = row.where(pd.notna(row), None).to_dict()
 
-        # Rows without a URL cannot be uniquely identified.
         if not record.get("url"):
             continue
 
-        # Match the field names expected by db.py.
+        # Preserve the collector's market label.
+        # Older rows without a label are marked unclassified.
+        record["market"] = record.get("market") or "unclassified"
+
         upsert_news(record)
         imported_rows += 1
 
