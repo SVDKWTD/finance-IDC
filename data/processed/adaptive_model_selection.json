@@ -10,7 +10,7 @@
     "window_mode": "expanding"
   },
   "direction_selection": {
-    "family": "sentiment",
+    "family": "market",
     "window_mode": "expanding"
   },
   "fallback_reason": "No feature model beat the expanding baseline by the required 5% MAE margin; baseline selected.",

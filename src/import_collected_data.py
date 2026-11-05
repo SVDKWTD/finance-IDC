@@ -7,9 +7,17 @@ from db import DEFAULT_DB_PATH, create_tables, get_connection
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 
+# Primary historical news file (~21.2k headlines)
 HISTORICAL_NEWS = (
-    PROJECT_DIR / "data" / "raw" / "historical_news_2021_2025.csv"
+    PROJECT_DIR / "data" / "raw" / "historical_news_merged_2021_2025.csv"
 )
+
+# Fallback to initial file if merged version is absent
+if not HISTORICAL_NEWS.exists():
+    HISTORICAL_NEWS = (
+        PROJECT_DIR / "data" / "raw" / "historical_news_2021_2025.csv"
+    )
+
 RECENT_NEWS = PROJECT_DIR / "data" / "raw" / "recent_news_2026.csv"
 PRICES_FILE = (
     PROJECT_DIR / "data" / "processed" / "nifty50_processed.csv"
@@ -104,7 +112,7 @@ def load_news_files():
         ].copy()
 
         print(
-            f"  Valid rows: {len(df)} "
+            f"   Valid rows: {len(df)} "
             f"(removed {before - len(df)} for blank URL/title or invalid date)"
         )
 

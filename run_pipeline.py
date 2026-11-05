@@ -14,6 +14,7 @@ STEPS = [
     ("Build official monthly-capped dataset", "src/build_monthly_sampled_dataset.py"),
     ("Generate and persist official capped-dataset forecast", "src/generate_forecast.py"),
     ("Evaluate official capped-model forecast outcomes", "src/record_forecast_outcome.py"),
+    ("Update walk-forward confusion matrix & classification metrics", "src/update_confusion_matrix.py"),
 ]
 
 
@@ -35,6 +36,8 @@ def main():
     print("Selection metrics: data/processed/adaptive_model_selection.csv")
     print("Selected configuration: data/processed/adaptive_model_selection.json")
     print("Official prospective outcomes: data/processed/forecast_outcome_history.csv.")
+    print("Confusion matrix & classification report: data/processed/confusion_matrix_metrics.csv")
+    print("Confusion matrix visual figure: reports/figures/walk_forward_confusion_matrix.png")
     print("No separate experiment command is required for the normal workflow.")
     return 0
 
