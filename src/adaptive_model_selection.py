@@ -22,11 +22,21 @@ SELECTION_FILE = DATA_DIR / "adaptive_model_selection.csv"
 SELECTION_JSON = DATA_DIR / "adaptive_model_selection.json"
 TARGET = "target_next_session_return_pct"
 ROLLING_WINDOW = 252
-MIN_RECENT_PREDICTIONS = 30
-MIN_MODEL_IMPROVEMENT = 0.02  # challenger must lower MAE by >=2% vs baseline
 
-MARKET_FEATURES = ["daily_return_pct", "return_lag1", "return_lag2", "return_lag5", "volatility_5", "article_count", "unique_sources"]
-SENTIMENT_FEATURES = MARKET_FEATURES + ["mean_sentiment", "positive_fraction", "negative_fraction", "neutral_fraction", "sentiment_lag1"]
+# ISSUE 7 FIX: Stabilize selector by increasing minimum evaluation window and margin requirement
+MIN_RECENT_PREDICTIONS = 60  # Increased from 30 to avoid small-sample volatility
+MIN_MODEL_IMPROVEMENT = 0.05  # Increased from 2% to 5% for strict hysteresis
+
+# Transform features matching generate_forecast.py
+MARKET_FEATURES = [
+    "daily_return_pct", "return_lag1", "return_lag2",
+    "return_lag5", "volatility_5", "log_article_count",
+    "log_unique_sources"
+]
+SENTIMENT_FEATURES = MARKET_FEATURES + [
+    "mean_sentiment", "positive_fraction",
+    "negative_fraction", "neutral_fraction", "sentiment_lag1"
+]
 
 
 def make_regressor():
@@ -45,6 +55,12 @@ def prepare_features(df):
     df["return_lag5"] = r.shift(5)
     df["volatility_5"] = r.rolling(5, min_periods=5).std()
     df["sentiment_lag1"] = pd.to_numeric(df["mean_sentiment"], errors="coerce").shift(1)
+
+    article_cnt = pd.to_numeric(df.get("article_count", 0), errors="coerce").fillna(0)
+    unique_src = pd.to_numeric(df.get("unique_sources", 0), errors="coerce").fillna(0)
+    df["log_article_count"] = np.log1p(article_cnt)
+    df["log_unique_sources"] = np.log1p(unique_src)
+
     return df
 
 
@@ -61,13 +77,11 @@ def select_strategy(df):
         raise ValueError("No known targets available for adaptive selection.")
 
     latest_target_date = pd.to_datetime(known["date"].max())
-    start_date = latest_target_date - pd.DateOffset(months=2)
+    start_date = latest_target_date - pd.DateOffset(months=3)  # Expanded window to match 60+ predictions
     recent_positions = [i for i, row in known.iterrows() if pd.Timestamp(row["date"]) >= start_date]
-    # The first 252 sessions are needed before rolling candidates are eligible.
     min_position = max(ROLLING_WINDOW, 300)
     recent_positions = [i for i in recent_positions if i >= min_position]
 
-    candidates = []
     pred_records = []
     for i in recent_positions:
         test = known.iloc[[i]]
@@ -78,7 +92,11 @@ def select_strategy(df):
                 continue
             y_train = train[TARGET].astype(float)
             base_pred = float(y_train.mean())
-            pred_records.append({"date": test["date"].iloc[0], "mode": mode, "family": "baseline", "actual_return_pct": y_true, "predicted_return_pct": base_pred, "p_up": float((y_train > 0).mean())})
+            pred_records.append({
+                "date": test["date"].iloc[0], "mode": mode, "family": "baseline",
+                "actual_return_pct": y_true, "predicted_return_pct": base_pred,
+                "p_up": float((y_train > 0).mean())
+            })
             for family, features in (("market", MARKET_FEATURES), ("sentiment", SENTIMENT_FEATURES)):
                 reg = make_regressor()
                 reg.fit(train[features], y_train)
@@ -87,13 +105,16 @@ def select_strategy(df):
                 if direction_train.nunique() >= 2:
                     clf = make_classifier()
                     clf.fit(train[features], direction_train)
-                    p_up = float(clf.predict_proba(test[features])[0, list(clf.named_steps["logisticregression"].classes_).index(1)])
+                    classes = list(clf.named_steps["logisticregression"].classes_)
+                    p_up = float(clf.predict_proba(test[features])[0, classes.index(1)])
                 else:
                     p_up = float(direction_train.mean())
-                pred_records.append({"date": test["date"].iloc[0], "mode": mode, "family": family, "actual_return_pct": y_true, "predicted_return_pct": pred, "p_up": p_up})
+                pred_records.append({
+                    "date": test["date"].iloc[0], "mode": mode, "family": family,
+                    "actual_return_pct": y_true, "predicted_return_pct": pred, "p_up": p_up
+                })
 
     preds = pd.DataFrame(pred_records)
-    expected_n = len(set(pd.to_datetime(known.loc[recent_positions, "date"]))) if recent_positions else 0
     rows = []
     if not preds.empty:
         for (mode, family), group in preds.groupby(["mode", "family"]):
@@ -101,7 +122,15 @@ def select_strategy(df):
             estimate = group["predicted_return_pct"].astype(float)
             actual_up = (actual > 0).astype(int)
             probs = group["p_up"].clip(0.0, 1.0)
-            rows.append({"window_mode": mode, "model_family": family, "n_predictions": len(group), "mae_pct": mean_absolute_error(actual, estimate), "rmse_pct": mean_squared_error(actual, estimate) ** 0.5, "direction_accuracy": accuracy_score(actual_up, (probs >= 0.5).astype(int)), "direction_brier": brier_score_loss(actual_up, probs), "period_start": str(pd.to_datetime(group["date"]).min().date()), "period_end": str(pd.to_datetime(group["date"]).max().date())})
+            rows.append({
+                "window_mode": mode, "model_family": family, "n_predictions": len(group),
+                "mae_pct": mean_absolute_error(actual, estimate),
+                "rmse_pct": mean_squared_error(actual, estimate) ** 0.5,
+                "direction_accuracy": accuracy_score(actual_up, (probs >= 0.5).astype(int)),
+                "direction_brier": brier_score_loss(actual_up, probs),
+                "period_start": str(pd.to_datetime(group["date"]).min().date()),
+                "period_end": str(pd.to_datetime(group["date"]).max().date())
+            })
     metrics = pd.DataFrame(rows)
 
     expanding_baseline_count = int(((preds["family"] == "baseline") & (preds["mode"] == "expanding")).sum()) if not preds.empty else 0
@@ -118,7 +147,7 @@ def select_strategy(df):
         eligible = eligible[eligible.mae_pct <= baseline_mae * (1.0 - MIN_MODEL_IMPROVEMENT)]
         if eligible.empty:
             selected_return = {"family": "baseline", "window_mode": "expanding"}
-            fallback_reason = "No feature model beat the expanding mean-return baseline by the required 2% MAE margin; baseline selected."
+            fallback_reason = f"No feature model beat the expanding baseline by the required {MIN_MODEL_IMPROVEMENT:.0%} MAE margin; baseline selected."
         else:
             best = eligible.sort_values(["mae_pct", "rmse_pct"], ascending=True).iloc[0]
             selected_return = {"family": str(best.model_family), "window_mode": str(best.window_mode)}
@@ -141,7 +170,7 @@ def select_strategy(df):
         "return_selection": selected_return,
         "direction_selection": selected_direction,
         "fallback_reason": fallback_reason,
-        "selection_method": "recent_two_calendar_months_walk_forward_v1",
+        "selection_method": "recent_window_walk_forward_stabilized_v2",
     }
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     metrics.to_csv(SELECTION_FILE, index=False, encoding="utf-8-sig")

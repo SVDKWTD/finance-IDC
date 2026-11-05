@@ -15,8 +15,6 @@ OUTPUT_DAILY = PROJECT_DIR / "data" / "processed" / "news_sentiment_daily.csv"
 MODEL_NAME = "ProsusAI/finbert"
 BATCH_SIZE = 32
 
-# Change this version whenever the scoring method changes. This prevents
-# scores created by an older method from being reused accidentally.
 SCORING_VERSION = "finbert_vader_textblob_v1"
 
 SENTIMENT_COLUMNS = [
@@ -46,7 +44,7 @@ def article_key(row):
 
 
 def calculate_vader_score(text):
-    """VADER compound score is already in the range [-1, 1]."""
+    """VADER compound score is in the range [-1, 1]."""
     return float(vader_analyzer.polarity_scores(text)["compound"])
 
 
@@ -61,7 +59,7 @@ def ensemble_score(finbert_score, vader_score, textblob_score):
 
 
 def label_from_score(score):
-    """Convert the ensemble score into a simple sentiment label."""
+    """Convert the ensemble score into a sentiment label."""
     if score > 0.05:
         return "positive"
     if score < -0.05:
@@ -84,7 +82,6 @@ def load_existing_scores():
         print("Existing cache uses an older scoring schema; rebuilding it.")
         return {}
 
-    # Do not reuse scores made by a different scoring method.
     old = old[old["scoring_version"] == SCORING_VERSION]
 
     scores = {}
@@ -100,7 +97,7 @@ def load_existing_scores():
             if pd.isna(value):
                 valid = False
                 break
-            if column == "sentiment_label" or column == "scoring_version":
+            if column in ("sentiment_label", "scoring_version"):
                 values[column] = str(value)
             else:
                 values[column] = float(value)
@@ -112,8 +109,16 @@ def load_existing_scores():
 
 
 def build_daily_summary(scored):
+    """ISSUE 5 FIX: Filter NIFTY-tagged headlines for target sentiment aggregation."""
+    if "market" in scored.columns:
+        nifty_scored = scored[scored["market"] == "nifty"].copy()
+        if nifty_scored.empty:
+            nifty_scored = scored.copy()
+    else:
+        nifty_scored = scored.copy()
+
     daily = (
-        scored.groupby("feature_date", as_index=False)
+        nifty_scored.groupby("feature_date", as_index=False)
         .agg(
             article_count=("title", "size"),
             mean_sentiment=("sentiment_score", "mean"),
@@ -155,7 +160,6 @@ def main():
     df["feature_date"] = df["feature_date"].astype(str).str.strip()
     df = df[df["title"] != ""].reset_index(drop=True)
 
-    # Keep one aligned row per article.
     if "url" in df.columns:
         df["url"] = df["url"].fillna("").astype(str).str.strip()
         has_url = df["url"] != ""
@@ -224,9 +228,7 @@ def main():
                 finbert_negative = scores.get("negative", 0.0)
                 finbert_neutral = scores.get("neutral", 0.0)
 
-                # FinBERT probabilities are converted to a signed score.
                 finbert_score = finbert_positive - finbert_negative
-
                 vader_score = calculate_vader_score(title)
                 textblob_score = calculate_textblob_score(title)
 
@@ -254,7 +256,6 @@ def main():
                 f"(batch {start // BATCH_SIZE + 1}/{total_batches})"
             )
 
-            # Save a checkpoint after each batch.
             partial_results = [cached_scores.get(key) for key in keys]
             valid_positions = [
                 i for i, result in enumerate(partial_results)

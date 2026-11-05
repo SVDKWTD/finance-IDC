@@ -1,18 +1,18 @@
 {
-  "selection_date": "2026-11-02",
-  "evaluation_start_date": "2026-09-02",
-  "evaluation_end_date": "2026-11-02",
-  "recent_prediction_count": 41,
-  "minimum_predictions": 30,
+  "selection_date": "2026-11-03",
+  "evaluation_start_date": "2026-08-03",
+  "evaluation_end_date": "2026-11-03",
+  "recent_prediction_count": 64,
+  "minimum_predictions": 60,
   "rolling_window_sessions": 252,
   "return_selection": {
     "family": "baseline",
     "window_mode": "expanding"
   },
   "direction_selection": {
-    "family": "market",
+    "family": "sentiment",
     "window_mode": "expanding"
   },
-  "fallback_reason": "No feature model beat the expanding mean-return baseline by the required 2% MAE margin; baseline selected.",
-  "selection_method": "recent_two_calendar_months_walk_forward_v1"
+  "fallback_reason": "No feature model beat the expanding baseline by the required 5% MAE margin; baseline selected.",
+  "selection_method": "recent_window_walk_forward_stabilized_v2"
 }

@@ -1,4 +1,3 @@
-
 from pathlib import Path
 from datetime import date, timedelta
 
@@ -17,6 +16,7 @@ ASSETS = {
 }
 
 RAW_DIR = Path("data/raw")
+PROCESSED_DIR = Path("data/processed")
 
 
 def download_asset(name, ticker):
@@ -104,9 +104,50 @@ def download_asset(name, ticker):
     return combined
 
 
+def process_nifty50_prices(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """ISSUE 2 FIX: Clean NIFTY prices and derive return columns expected downstream."""
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    processed_path = PROCESSED_DIR / "nifty50_processed.csv"
+
+    df = df_raw.dropna(subset=["Close"]).copy()
+    df = df[df["Close"] > 0].copy()
+    df.sort_values("Date", inplace=True)
+    df.drop_duplicates(subset=["Date"], keep="last", inplace=True)
+
+    # Match exact Adj Close column naming convention
+    adj_col = "Adj Close" if "Adj Close" in df.columns else ("Adj_Close" if "Adj_Close" in df.columns else "Close")
+    df["Adj_Close"] = df[adj_col]
+
+    # Calculate returns and range metrics
+    df["Daily_Return"] = df["Close"].diff()
+    df["Daily_Return_Pct"] = df["Close"].pct_change() * 100.0
+    df["Daily_Range"] = df["High"] - df["Low"]
+    df["Intraday_Change_Pct"] = ((df["Close"] - df["Open"]) / df["Open"]) * 100.0
+
+    # Format Date column for consistent CSV export
+    df["Date"] = pd.to_datetime(df["Date"]).dt.strftime("%Y-%m-%d")
+
+    cols_to_keep = [
+        "Date", "Open", "High", "Low", "Close", "Adj_Close", "Volume",
+        "Daily_Return", "Daily_Return_Pct", "Daily_Range", "Intraday_Change_Pct"
+    ]
+    available_cols = [c for c in cols_to_keep if c in df.columns]
+    processed_df = df[available_cols].copy()
+
+    processed_df.to_csv(processed_path, index=False)
+    print(f"\n[ISSUE 2 FIX] Exported cleaned price features ({len(processed_df):,} rows) to {processed_path}")
+    return processed_df
+
+
 def main():
+    nifty_df = None
     for name, ticker in ASSETS.items():
-        download_asset(name, ticker)
+        downloaded = download_asset(name, ticker)
+        if name == "nifty50":
+            nifty_df = downloaded
+
+    if nifty_df is not None:
+        process_nifty50_prices(nifty_df)
 
 
 if __name__ == "__main__":

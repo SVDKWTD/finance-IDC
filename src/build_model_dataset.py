@@ -1,12 +1,12 @@
 from pathlib import Path
-
 import pandas as pd
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_DIR / "data" / "processed"
 
 MARKET_FILE = DATA_DIR / "news_market_daily.csv"
-SENTIMENT_FILE = DATA_DIR / "news_sentiment_daily_sampled.csv"
+# ISSUE 10 FIX: Read from the full-corpus daily sentiment file produced by analyze_news_sentiment.py
+SENTIMENT_FILE = DATA_DIR / "news_sentiment_daily.csv"
 OUTPUT_FILE = DATA_DIR / "model_dataset.csv"
 
 MARKET_FEATURES = [
@@ -25,6 +25,11 @@ SENTIMENT_FEATURES = [
 
 
 def main():
+    if not MARKET_FILE.exists():
+        raise FileNotFoundError(f"Missing market file: {MARKET_FILE}")
+    if not SENTIMENT_FILE.exists():
+        raise FileNotFoundError(f"Missing sentiment file: {SENTIMENT_FILE}")
+
     market = pd.read_csv(MARKET_FILE)
     sentiment = pd.read_csv(SENTIMENT_FILE)
 
@@ -65,35 +70,20 @@ def main():
         raise ValueError("Market dataset has duplicate dates.")
 
     if sentiment["date"].duplicated().any():
-        raise ValueError("Sampled sentiment dataset has duplicate dates.")
+        raise ValueError("Sentiment dataset has duplicate dates.")
 
+    # Left-merge sentiment onto market dates. Sessions with zero headlines retain NaN
+    # sentiment values which downstream pipelines handle using SimpleImputer.
     combined = market.merge(
         sentiment[["date", *SENTIMENT_FEATURES]],
         on="date",
         how="left",
         validate="one_to_one",
-        indicator=True,
     )
-
-    unmatched = combined.loc[combined["_merge"] != "both", "date"]
-    if not unmatched.empty:
-        raise ValueError(
-            "No sampled sentiment found for market dates: "
-            f"{unmatched.head(10).tolist()}"
-            + (" ..." if len(unmatched) > 10 else "")
-        )
-
-    combined = combined.drop(columns="_merge")
-
-    if combined[SENTIMENT_FEATURES].isna().any().any():
-        missing_counts = combined[SENTIMENT_FEATURES].isna().sum()
-        raise ValueError(
-            "Missing sampled sentiment values after merge:\n"
-            f"{missing_counts[missing_counts > 0]}"
-        )
 
     combined = combined.sort_values("date").reset_index(drop=True)
 
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     combined.to_csv(
         OUTPUT_FILE,
         index=False,

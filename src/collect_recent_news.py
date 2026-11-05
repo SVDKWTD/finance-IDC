@@ -1,5 +1,6 @@
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
+import re
 import time
 
 import feedparser
@@ -28,6 +29,7 @@ HISTORICAL_FILE = Path("data/raw/historical_news_2021_2025.csv")
 OUTPUT_FILE = Path("data/raw/recent_news_2026.csv")
 REPORT_FILE = Path("data/raw/monthly_coverage_2026.csv")
 
+# ISSUE 1 FIX: Added 'market' column to the schema so downstream scripts don't default to 'unclassified'
 COLUMNS = [
     "title",
     "published_at",
@@ -37,6 +39,7 @@ COLUMNS = [
     "matched_terms",
     "requested_month",
     "collected_at",
+    "market",
 ]
 
 
@@ -49,6 +52,13 @@ def load_urls(path):
     return set(existing["url"].dropna().astype(str).str.strip())
 
 
+def normalize_title(title: str) -> str:
+    """Strip punctuation, trailing sources, and whitespace for clean title matching."""
+    title = str(title).lower().strip()
+    title = re.sub(r"\s*-\s*[^-]+$", "", title)
+    return re.sub(r"[^\w\s]", "", title).strip()
+
+
 def prepare_saved_frame(path):
     if not path.exists():
         return pd.DataFrame(columns=COLUMNS)
@@ -57,6 +67,11 @@ def prepare_saved_frame(path):
     for column in COLUMNS:
         if column not in frame.columns:
             frame[column] = ""
+            
+    # ISSUE 1 FIX: Ensure saved rows carry market='nifty' instead of being blank
+    frame["market"] = frame["market"].fillna("nifty").astype(str).str.strip()
+    frame.loc[frame["market"].isin(["", "unclassified"]), "market"] = "nifty"
+
     frame = frame[COLUMNS].copy()
     frame["url"] = frame["url"].fillna("").astype(str).str.strip()
     frame["title"] = frame["title"].fillna("").astype(str).str.strip()
@@ -83,8 +98,6 @@ def collect_recent_news():
     historical_urls = load_urls(HISTORICAL_FILE)
     previous = prepare_saved_frame(OUTPUT_FILE)
 
-    # Search a rolling overlap window. The saved collection retains all earlier
-    # articles; the overlap allows late-indexed articles to be discovered.
     window_start = max(
         COLLECTION_START,
         today - timedelta(days=LOOKBACK_DAYS)
@@ -152,6 +165,7 @@ def collect_recent_news():
                         "matched_terms": term,
                         "requested_month": published_at.strftime("%Y-%m"),
                         "collected_at": datetime.now(timezone.utc).isoformat(),
+                        "market": "nifty",  # ISSUE 1 FIX: Tag newly collected articles as 'nifty'
                     })
                     valid_count += 1
 
@@ -171,26 +185,13 @@ def collect_recent_news():
 
     combined["url"] = combined["url"].fillna("").astype(str).str.strip()
     combined["title"] = combined["title"].fillna("").astype(str).str.strip()
+    combined["market"] = combined["market"].fillna("nifty").astype(str).str.strip()
+    combined.loc[combined["market"].isin(["", "unclassified"]), "market"] = "nifty"
+
     combined["published_at"] = pd.to_datetime(
         combined["published_at"], errors="coerce", utc=True
     )
-    combined = combined[
-        (combined["url"] != "")
-        & (combined["title"] != "")
-        & combined["published_at"].notna()
-        & (combined["published_at"] >= pd.Timestamp(COLLECTION_START, tz="UTC"))
-        & (combined["published_at"] < pd.Timestamp(window_end_exclusive, tz="UTC"))
-            | (
-                (combined["url"] != "")
-                & (combined["title"] != "")
-                & combined["published_at"].notna()
-                & (combined["published_at"] >= pd.Timestamp(COLLECTION_START, tz="UTC"))
-                & combined["url"].isin(previous["url"])
-            )
-    ].copy()
-
-    # Keep old saved articles even when outside the rolling search window.
-    # New rows are already limited to the rolling window above.
+    
     old_urls = set(previous["url"])
     keep_old = combined["url"].isin(old_urls)
     keep_recent = (
@@ -199,6 +200,12 @@ def collect_recent_news():
     )
     combined = combined[keep_old | keep_recent].copy()
     combined = combined[~combined["url"].isin(historical_urls)].copy()
+
+    # ISSUE 8 FIX: De-duplicate syndicated stories on normalized title + publication date
+    combined["_norm_title"] = combined["title"].apply(normalize_title)
+    combined["_pub_date"] = combined["published_at"].dt.date
+    combined = combined.drop_duplicates(subset=["_norm_title", "_pub_date"], keep="first")
+    combined.drop(columns=["_norm_title", "_pub_date"], inplace=True)
 
     combined["matched_terms"] = combined["matched_terms"].fillna("").astype(str)
     combined = (
@@ -216,6 +223,7 @@ def collect_recent_news():
             })),
             "requested_month": "first",
             "collected_at": "first",
+            "market": "first",
         })
     )
 
@@ -226,7 +234,6 @@ def collect_recent_news():
     combined = combined[COLUMNS]
     combined.to_csv(OUTPUT_FILE, index=False, encoding="utf-8-sig")
 
-    # Rebuild the full monthly report from the complete saved collection.
     monthly = (
         combined.groupby("requested_month")
         .agg(unique_articles=("url", "nunique"))

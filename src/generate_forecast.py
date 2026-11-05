@@ -15,10 +15,11 @@ DATA = ROOT / "data" / "processed" / "model_dataset_sampled_monthly_2026.csv"
 OUTPUT = ROOT / "data" / "processed" / "latest_forecast.csv"
 DB = ROOT / "data" / "market.db"
 
+# ISSUE 4 FIX: Use log-transformed volume features to prevent extrapolation on 2026 spikes
 MARKET_FEATURES = [
     "daily_return_pct", "return_lag1", "return_lag2",
-    "return_lag5", "volatility_5", "article_count",
-    "unique_sources",
+    "return_lag5", "volatility_5", "log_article_count",
+    "log_unique_sources",
 ]
 SENTIMENT_FEATURES = MARKET_FEATURES + [
     "mean_sentiment", "positive_fraction",
@@ -27,7 +28,7 @@ SENTIMENT_FEATURES = MARKET_FEATURES + [
 VOLATILITY_FEATURES = [
     "daily_return_pct", "return_lag1", "return_lag2", "return_lag5",
     "return_lag10", "volatility_5", "volatility_20", "momentum_5",
-    "momentum_10", "article_count", "unique_sources", "mean_sentiment",
+    "momentum_10", "log_article_count", "log_unique_sources", "mean_sentiment",
     "median_sentiment", "positive_fraction", "negative_fraction",
     "neutral_fraction",
 ]
@@ -60,6 +61,18 @@ def add_features(df):
     df["momentum_5"] = r.rolling(5, min_periods=5).sum()
     df["momentum_10"] = r.rolling(10, min_periods=10).sum()
     df["sentiment_lag1"] = pd.to_numeric(df["mean_sentiment"], errors="coerce").shift(1)
+
+    # ISSUE 4 FIX: Transform volume features to handle regime shift in headline density
+    article_cnt = pd.to_numeric(df["article_count"], errors="coerce").fillna(0)
+    unique_src = pd.to_numeric(df["unique_sources"], errors="coerce").fillna(0)
+    
+    df["log_article_count"] = np.log1p(article_cnt)
+    df["log_unique_sources"] = np.log1p(unique_src)
+    
+    rolling_mean_vol = article_cnt.rolling(60, min_periods=10).mean()
+    rolling_std_vol = article_cnt.rolling(60, min_periods=10).std().replace(0, 1)
+    df["article_count_zscore"] = (article_cnt - rolling_mean_vol) / rolling_std_vol
+
     df["abs_return"] = r.abs()
     # Threshold uses only absolute returns known through the feature date.
     df["volatility_threshold_pct"] = df["abs_return"].rolling(
@@ -171,7 +184,7 @@ def main():
     warnings.append("Adaptive selection is a research heuristic; recent two-month performance may be noisy")
 
     forecast = {
-        "dataset": "Monthly sampled 2026 (500-article monthly cap)",
+        "dataset": "Monthly sampled 2026 (per-session daily cap)",
         "dataset_file": DATA.name,
         "forecast_origin_date": forecast_origin,
         "target_session_date": None,
@@ -288,8 +301,8 @@ def main():
         """, (forecast_origin, VOL_MODEL_VERSION)).fetchone()
 
     # Report the freshly computed values, not the immutable first-issued DB record.
-    print("\n===== OFFICIAL NEXT-SESSION FORECAST: MONTHLY-SAMPLED DATASET =====")
-    print(f"Dataset: {DATA.name} (2026 monthly cap: 500 articles/month)")
+    print("\n===== OFFICIAL NEXT-SESSION FORECAST: SAMPLED DATASET =====")
+    print(f"Dataset: {DATA.name}")
     print(f"Latest available market session: {forecast_origin}")
     print(f"Historical training rows: {len(train)}")
     print(f"Market-only forecast: {market_return:+.4f}% ({'UP' if market_return >= 0 else 'DOWN'})")
@@ -317,12 +330,10 @@ def main():
     print(f"Adaptive selector recent OOS predictions: {selection['recent_prediction_count']}")
     print("\nWarnings:")
     for warning in warnings:
-        print(f"- {warning}")
+        print(f" - {warning}")
     print(f"\nForecast history database:\n{DB}")
     print("Target date is resolved from the actual exchange sessions by outcome tracking.")
 
-    # This is the single official latest-forecast artifact. Full-corpus results
-    # remain available only through the optional research comparison script.
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame([forecast]).to_csv(OUTPUT, index=False, encoding="utf-8-sig")
     print(f"\nSaved official capped-dataset forecast to:\n{OUTPUT}")

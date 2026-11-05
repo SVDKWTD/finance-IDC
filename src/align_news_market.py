@@ -1,5 +1,4 @@
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
 
@@ -98,7 +97,7 @@ def main():
         MARKET_TIMEZONE
     )
     news["market"] = (
-        news["market"].fillna("unclassified").astype(str).str.strip()
+        news["market"].fillna("nifty").astype(str).str.strip()
     )
 
     prices["date"] = pd.to_datetime(
@@ -112,7 +111,6 @@ def main():
         .reset_index(drop=True)
     )
 
-    # NIFTY session close timestamps, used as the model's feature cutoff.
     nifty_closes = make_cutoffs(prices["date"], "nifty")
     nifty_close_ns = nifty_closes.asi8
 
@@ -120,14 +118,11 @@ def main():
 
     for market, group in news.groupby("market"):
         if market not in MARKET_CLOSES:
-            # Do not silently treat unclassified or unknown-market articles
-            # as NIFTY news.
             continue
 
         market_cutoffs = make_cutoffs(prices["date"], market)
         cutoff_ns = market_cutoffs.asi8
 
-        # First market cutoff at or after publication.
         market_positions = np.searchsorted(
             cutoff_ns,
             group["published_at_ist"].astype("int64").to_numpy(),
@@ -143,8 +138,6 @@ def main():
 
         available_ns = cutoff_ns[market_positions]
 
-        # Assign each article to the first NIFTY close at or after its
-        # market-specific information cutoff.
         nifty_positions = np.searchsorted(
             nifty_close_ns, available_ns, side="left"
         )
@@ -180,7 +173,6 @@ def main():
         ARTICLE_OUTPUT, index=False, encoding="utf-8-sig"
     )
 
-    # Separate article-count features for each market.
     daily_news = (
         aligned_news.groupby(["feature_date", "market"])
         .agg(
@@ -217,8 +209,6 @@ def main():
     for column in count_columns:
         daily[column] = daily[column].fillna(0).astype(int)
 
-    # Add external market variables. These are still merged by date;
-    # verify their price timestamps before using them in forecasting.
     for name, filename in ASSETS.items():
         asset = load_asset(name, filename)
         daily = daily.merge(

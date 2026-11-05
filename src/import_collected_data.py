@@ -1,5 +1,5 @@
 from pathlib import Path
-
+import re
 import pandas as pd
 
 from db import DEFAULT_DB_PATH, create_tables, get_connection
@@ -42,6 +42,14 @@ def ensure_columns(connection, table, columns):
             print(f"Added column: {table}.{column}")
 
 
+def normalize_title(title: str) -> str:
+    """Strip punctuation and whitespace for clean title matching."""
+    title = str(title).lower().strip()
+    # Strip trailing source tags (e.g. " - Economic Times")
+    title = re.sub(r"\s*-\s*[^-]+$", "", title)
+    return re.sub(r"[^\w\s]", "", title).strip()
+
+
 def load_news_files():
     frames = []
 
@@ -71,16 +79,16 @@ def load_news_files():
         df["url"] = df["url"].fillna("").astype(str).str.strip()
         df["title"] = df["title"].fillna("").astype(str).str.strip()
 
+        # ISSUE 1 FIX: Default missing/blank market tags to 'nifty' instead of 'unclassified'
         df["market"] = (
             df["market"]
-            .fillna("unclassified")
+            .fillna("nifty")
             .astype(str)
             .str.strip()
         )
-        df.loc[df["market"] == "", "market"] = "unclassified"
+        df.loc[(df["market"] == "") | (df["market"] == "unclassified"), "market"] = "nifty"
 
-        # Parse each file independently so one file's date format
-        # cannot interfere with parsing the other file.
+        # Parse timestamps independently
         df["published_at"] = pd.to_datetime(
             df["published_at"],
             format="mixed",
@@ -107,6 +115,15 @@ def load_news_files():
 
     news = pd.concat(frames, ignore_index=True)
     print("Rows after combining files:", len(news))
+
+    # ISSUE 8 FIX: De-duplicate syndicated stories on normalized title + publication date
+    news["_norm_title"] = news["title"].apply(normalize_title)
+    news["_pub_date"] = news["published_at"].dt.date
+    
+    before_title_dedup = len(news)
+    news = news.drop_duplicates(subset=["_norm_title", "_pub_date", "market"], keep="first")
+    print(f"De-duplicated syndicated titles: removed {before_title_dedup - len(news)} rows.")
+    news.drop(columns=["_norm_title", "_pub_date"], inplace=True)
 
     news["matched_terms"] = news["matched_terms"].fillna("").astype(str)
 
@@ -177,7 +194,7 @@ def import_data():
             {
                 "matched_terms": "TEXT",
                 "requested_month": "TEXT",
-                "market": "TEXT NOT NULL DEFAULT 'unclassified'",
+                "market": "TEXT NOT NULL DEFAULT 'nifty'",
             },
         )
 
